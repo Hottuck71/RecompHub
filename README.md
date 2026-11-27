@@ -26,6 +26,10 @@ Put `RecompHub.exe` in a folder with plenty of free space (about 20 GB per game)
    finds it by itself when it can. Press *Build*. The first build takes 30 minutes or more. A wrong disc is
    reported straight away.
 4. **Play** opens that game's own launcher: graphics, controllers, Mii Maker, save data and online rooms.
+5. **Uninstall** (next to *Update to newest*) deletes a game the hub installed: its files, the built game and its
+   save. Export your Miis and records first with *Save data* in the game's launcher if you want to keep them. For a
+   folder you picked with *Use a folder I already have*, it only removes it from the hub and deletes nothing. Your
+   disc image is never touched.
 
 ## Online
 
@@ -36,6 +40,8 @@ One relay server works for all three games.
   server. *Copy address for friends* copies the internet address to send to friends. If your router has UPnP
   turned off, the hub tells you to forward the port yourself. People on your own Wi-Fi can play without that.
 - **Start my server automatically when I sign in to Windows** runs `RecompHub.exe --server` at sign-in.
+- **Uninstall server** undoes all of that: stops the server, turns off starting at sign-in, closes the router port
+  if the hub opened it, removes the firewall rule (Windows asks), sets games that used it back, and deletes `Server\`.
 - **Join a friend's server**: type the address they sent and press *Use this server*. Every installed game then
   uses it. Then, in a game: Online, Join, and the host's room code.
 

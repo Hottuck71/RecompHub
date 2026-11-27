@@ -41,7 +41,7 @@
 #include <string.h>
 #include <wchar.h>
 
-#define HUB_VERSION L"1.0.0"
+#define HUB_VERSION L"1.1.0"
 #define RELAY_PORT 51020
 #define RELAY_PORT_S L"51020"
 #define FIREWALL_RULE L"Recomp Hub relay"
@@ -69,9 +69,9 @@ enum {
     ID_NAV = 100, /* ID_NAV + 0..3 */
     ID_TITLE = 200, ID_BLURB, ID_G1, ID_G2, ID_G3, ID_GETSTATUS, ID_DOWNLOAD, ID_EXISTING, ID_DLPROG,
     ID_ROMLBL, ID_ROM, ID_ROMBROWSE, ID_TOOLLBL, ID_TOOL, ID_TOOLBROWSE, ID_BUILD, ID_BUILDSTATUS, ID_BUILDDETAIL,
-    ID_BUILDPROG, ID_PLAY, ID_OPENDIR, ID_PLAYNOTE,
+    ID_BUILDPROG, ID_PLAY, ID_OPENDIR, ID_PLAYNOTE, ID_UNINSTALL,
     ID_OTITLE = 300, ID_OBLURB, ID_OG1, ID_HOST, ID_STOP, ID_COPY, ID_OSTATUS, ID_AUTOSTART, ID_OG2, ID_JOINLBL,
-    ID_JOIN, ID_USEJOIN, ID_JOINNOTE,
+    ID_JOIN, ID_USEJOIN, ID_JOINNOTE, ID_UNSERVER,
     ID_HEAD = 400, ID_SUBHEAD,
 };
 #define WM_JOB_STATUS (WM_APP + 1) /* wParam: 0 game status, 1 build status, 2 online text; lParam: malloc'd text */
@@ -184,11 +184,12 @@ static BOOL ini_get(const wchar_t* file, const char* key, wchar_t* out, int cap)
     free(buf);
     return found;
 }
-/* Sets key=value, keeping every other line as it was. */
+/* Sets key=value, keeping every other line as it was. A NULL value removes the key. */
 static BOOL ini_set(const wchar_t* file, const char* key, const wchar_t* value) {
     DWORD len = 0;
     char* buf = read_file(file, &len);
-    char* v = to_utf8(value);
+    if (!value && !buf) return TRUE; /* nothing to remove */
+    char* v = to_utf8(value ? value : L"");
     size_t klen = strlen(key), cap = len * 2 + strlen(v) + klen + 8; /* room for a CR on every line */
     char* out = malloc(cap);
     size_t at = 0;
@@ -199,7 +200,7 @@ static BOOL ini_set(const wchar_t* file, const char* key, const wchar_t* value) 
             size_t n = end ? (size_t)(end - line) : strlen(line);
             if (n && line[n - 1] == '\r') n--;
             if (n > klen && !strncmp(line, key, klen) && line[klen] == '=') {
-                if (!done) at += sprintf(out + at, "%s=%s\r\n", key, v);
+                if (!done && value) at += sprintf(out + at, "%s=%s\r\n", key, v);
                 done = TRUE;
             } else if (n) {
                 memcpy(out + at, line, n);
@@ -211,7 +212,7 @@ static BOOL ini_set(const wchar_t* file, const char* key, const wchar_t* value) 
             line = end + 1;
         }
     }
-    if (!done) at += sprintf(out + at, "%s=%s\r\n", key, v);
+    if (!done && value) at += sprintf(out + at, "%s=%s\r\n", key, v);
     BOOL ok = write_file(file, out, (DWORD)at);
     free(buf);
     free(v);
@@ -250,6 +251,14 @@ static int game_state(int i) {
     if (h == INVALID_HANDLE_VALUE) return INSTALLED;
     FindClose(h);
     return BUILT;
+}
+
+/* TRUE when the game's folder is the one Recomp Hub made (Games\<recomp>), not one the player chose. */
+static BOOL hub_made_folder(int i) {
+    wchar_t d[MAX_PATH], mine[MAX_PATH];
+    game_dir(i, d);
+    _snwprintf(mine, MAX_PATH, L"%s\\Games\\%s", g_dir, GAMES[i].repo);
+    return !_wcsicmp(d, mine);
 }
 
 /* ---- processes ---- */
@@ -338,6 +347,26 @@ static int count_processes(const wchar_t* exe_name, BOOL kill) {
     }
     CloseHandle(snap);
     return n;
+}
+
+/* TRUE if a program started from inside dir is running (a game's launcher, or the game itself). */
+static BOOL running_from(const wchar_t* dir) {
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return FALSE;
+    size_t n = wcslen(dir);
+    while (n && dir[n - 1] == L'\\') n--;
+    PROCESSENTRY32W pe = {sizeof pe};
+    BOOL found = FALSE;
+    for (BOOL ok = Process32FirstW(snap, &pe); ok && !found; ok = Process32NextW(snap, &pe)) {
+        HANDLE p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pe.th32ProcessID);
+        if (!p) continue;
+        wchar_t path[MAX_PATH * 2];
+        DWORD sz = MAX_PATH * 2;
+        if (QueryFullProcessImageNameW(p, 0, path, &sz) && sz > n && !_wcsnicmp(path, dir, n) && path[n] == L'\\') found = TRUE;
+        CloseHandle(p);
+    }
+    CloseHandle(snap);
+    return found;
 }
 
 /* ---- HTTPS ---- */
@@ -835,6 +864,100 @@ done:
     return 0;
 }
 
+/* Deletes a game's folder (one Recomp Hub made) and forgets it. */
+static DWORD WINAPI uninstall_job(LPVOID arg) {
+    int i = (int)(INT_PTR)arg;
+    wchar_t d[MAX_PATH];
+    char key[64];
+    game_dir(i, d);
+    post_progress(-1);
+    post_text(0, L"Uninstalling %s...", GAMES[i].title);
+    remove_tree(d);
+    if (dir_exists(d)) {
+        post_text(0, L"Some files in %s couldn't be deleted. Close anything using them and press Uninstall again.", d);
+    } else {
+        hub_key(key, "dir", i);
+        hub_set(key, NULL);
+        hub_key(key, "version", i);
+        hub_set(key, NULL);
+        post_text(0, L"%s is uninstalled. Your disc image wasn't touched.", GAMES[i].title);
+    }
+    post_progress(0);
+    PostMessageW(g_wnd, WM_JOB_DONE, 0, 0);
+    return 0;
+}
+
+/* Undoes "Set up my server": the relay, starting at sign-in, the router port, the firewall rule, Server\, and
+   games pointed at this PC. Joining a friend's server is untouched. */
+static DWORD WINAPI remove_server_job(LPVOID arg) {
+    (void)arg;
+    wchar_t ip[64] = L"", dir[MAX_PATH], lines[1200] = L"";
+    post_progress(-1);
+    post_text(2, L"Uninstalling your server...");
+    count_processes(L"wsr_relay.exe", TRUE);
+    Sleep(300);
+    wcscat(lines, relay_running() ? L"Server: still running (end wsr_relay.exe in Task Manager).\r\n" : L"Server: stopped.\r\n");
+    set_autostart(FALSE);
+    wcscat(lines, L"Starting at sign-in: off.\r\n");
+
+    /* The router: remove the port rule, only if it's the one Recomp Hub added. */
+    post_text(2, L"Asking your router to close port " RELAY_PORT_S L"...");
+    char* out = NULL;
+    run_powershell(
+        L"$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue'\n"
+        L"try{$c=(New-Object -ComObject HNetCfg.NATUPnP).StaticPortMappingCollection}catch{'RESULT=NONE';exit}\n"
+        L"if($c -eq $null){'RESULT=NONE';exit}\n"
+        L"$m=$false;foreach($x in $c){if($x.ExternalPort -eq " RELAY_PORT_S L" -and $x.Protocol -eq 'TCP' -and $x.Description -eq 'Recomp Hub relay'){$m=$true}}\n"
+        L"if(-not $m){'RESULT=NONE';exit}\n"
+        L"try{$c.Remove(" RELAY_PORT_S L",'TCP');'RESULT=REMOVED'}catch{'RESULT=FAILED'}\n",
+        &out, 45000);
+    wcscat(lines, out && strstr(out, "RESULT=REMOVED") ? L"Router: port " RELAY_PORT_S L" closed.\r\n"
+                  : out && strstr(out, "RESULT=FAILED") ? L"Router: it wouldn't close port " RELAY_PORT_S L"; remove it in your router's settings.\r\n"
+                  : L"Router: nothing to close.\r\n");
+    free(out);
+
+    /* Windows Firewall: removing the rule needs administrator rights, so Windows asks. */
+    wchar_t* check = wdup_printf(L"netsh advfirewall firewall show rule name=\"%s\"", FIREWALL_RULE);
+    BOOL have_rule = run_hidden(check, NULL, NULL, 15000) == 0;
+    free(check);
+    if (have_rule) {
+        post_text(2, L"Removing the Windows Firewall rule (Windows will ask)...");
+        wchar_t* args = wdup_printf(L"advfirewall firewall delete rule name=\"%s\"", FIREWALL_RULE);
+        BOOL ok = run_as_admin(L"netsh.exe", args);
+        free(args);
+        wcscat(lines, ok ? L"Windows Firewall: rule removed.\r\n"
+                         : L"Windows Firewall: rule NOT removed (Windows didn't get a Yes). Press Uninstall server again.\r\n");
+    } else {
+        wcscat(lines, L"Windows Firewall: no rule to remove.\r\n");
+    }
+
+    /* Games pointed at this PC's server go back to their own setting. */
+    local_ip(ip, 64);
+    int unset = 0;
+    for (int i = 0; i < NGAMES; i++) {
+        wchar_t ini[MAX_PATH], exe[MAX_PATH], v[128];
+        if (!game_file(i, L"Launcher.exe", exe)) continue;
+        game_file(i, L"launcher.ini", ini);
+        ini_get(ini, "relay", v, 128);
+        if (v[0] && ((ip[0] && !_wcsicmp(v, ip)) || !_wcsicmp(v, L"127.0.0.1") || !_wcsicmp(v, L"localhost"))) {
+            ini_set(ini, "relay", NULL);
+            unset++;
+        }
+    }
+    wchar_t games_line[160];
+    _snwprintf(games_line, 160, L"Games that used this server: %d set back.\r\n", unset);
+    wcscat(lines, games_line);
+
+    server_dir(dir);
+    remove_tree(dir);
+    wcscat(lines, dir_exists(dir) ? L"Server folder: couldn't delete all of it.\r\n" : L"Server folder: deleted.\r\n");
+    g_friend_addr[0] = 0;
+    post_text(2, L"Your server is uninstalled.\r\n\r\n%sJoining a friend's server still works.", lines);
+    post_progress(0);
+    PostMessageW(g_wnd, WM_JOB_DONE, 0, 0);
+    return 0;
+}
+
 /* ================= the window ================= */
 static HWND add(const wchar_t* cls, const wchar_t* text, DWORD style, int x, int y, int w, int h, int id, HFONT font) {
     HWND c = CreateWindowExW(0, cls, text, WS_CHILD | style, S(x), S(y), S(w), S(h), g_wnd, (HMENU)(INT_PTR)id, g_inst, NULL);
@@ -843,9 +966,9 @@ static HWND add(const wchar_t* cls, const wchar_t* text, DWORD style, int x, int
 }
 static const int GAME_IDS[] = {ID_TITLE, ID_BLURB, ID_G1, ID_G2, ID_G3, ID_GETSTATUS, ID_DOWNLOAD, ID_EXISTING, ID_DLPROG,
                                ID_ROMLBL, ID_ROM, ID_ROMBROWSE, ID_TOOLLBL, ID_TOOL, ID_TOOLBROWSE, ID_BUILD, ID_BUILDSTATUS,
-                               ID_BUILDDETAIL, ID_BUILDPROG, ID_PLAY, ID_OPENDIR, ID_PLAYNOTE};
+                               ID_BUILDDETAIL, ID_BUILDPROG, ID_PLAY, ID_OPENDIR, ID_PLAYNOTE, ID_UNINSTALL};
 static const int ONLINE_IDS[] = {ID_OTITLE, ID_OBLURB, ID_OG1, ID_HOST, ID_STOP, ID_COPY, ID_OSTATUS, ID_AUTOSTART,
-                                 ID_OG2, ID_JOINLBL, ID_JOIN, ID_USEJOIN, ID_JOINNOTE};
+                                 ID_OG2, ID_JOINLBL, ID_JOIN, ID_USEJOIN, ID_JOINNOTE, ID_UNSERVER};
 
 static void create_controls(void) {
     const DWORD V = WS_VISIBLE;
@@ -864,6 +987,7 @@ static void create_controls(void) {
     add(L"STATIC", L"", SS_PATHELLIPSIS, X + 16, 108, W - 32, 20, ID_GETSTATUS, NULL); /* a long folder gets "..." */
     add(L"BUTTON", L"Download && install", WS_TABSTOP, X + 16, 134, 190, 32, ID_DOWNLOAD, NULL);
     add(L"BUTTON", L"Use a folder I already have...", WS_TABSTOP, X + 216, 134, 230, 32, ID_EXISTING, NULL);
+    add(L"BUTTON", L"Uninstall", WS_TABSTOP, X + 456, 134, W - 472, 32, ID_UNINSTALL, NULL);
     add(PROGRESS_CLASSW, L"", 0, X + 16, 174, W - 32, 10, ID_DLPROG, NULL);
     add(L"BUTTON", L"2   Build it from your disc", BS_GROUPBOX, X, 206, W, 210, ID_G2, NULL);
     add(L"STATIC", L"Your disc image (.iso, .wbfs, .rvz...)", 0, X + 16, 230, W - 32, 18, ID_ROMLBL, NULL);
@@ -889,7 +1013,8 @@ static void create_controls(void) {
     add(L"BUTTON", L"Stop server", WS_TABSTOP, X + 246, 122, 120, 36, ID_STOP, NULL);
     add(L"BUTTON", L"Copy address for friends", WS_TABSTOP, X + 376, 122, W - 392, 36, ID_COPY, NULL);
     add(L"EDIT", L"", WS_BORDER | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL, X + 16, 168, W - 32, 156, ID_OSTATUS, NULL);
-    add(L"BUTTON", L"Start my server automatically when I sign in to Windows", WS_TABSTOP | BS_AUTOCHECKBOX, X + 16, 332, W - 32, 22, ID_AUTOSTART, NULL);
+    add(L"BUTTON", L"Start my server automatically when I sign in to Windows", WS_TABSTOP | BS_AUTOCHECKBOX, X + 16, 332, W - 192, 22, ID_AUTOSTART, NULL);
+    add(L"BUTTON", L"Uninstall server", WS_TABSTOP, X + W - 166, 328, 150, 30, ID_UNSERVER, NULL);
     add(L"BUTTON", L"Join a friend's server", BS_GROUPBOX, X, 374, W, 118, ID_OG2, NULL);
     add(L"STATIC", L"The server address your friend gave you", 0, X + 16, 398, W - 32, 18, ID_JOINLBL, NULL);
     add(L"EDIT", L"", WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL, X + 16, 418, W - 186, 28, ID_JOIN, NULL);
@@ -938,6 +1063,7 @@ static void refresh_page(void) {
         SetWindowTextW(ctl(ID_DOWNLOAD), st == NOT_INSTALLED ? L"Download && install" : L"Update to newest");
         EnableWindow(ctl(ID_DOWNLOAD), !busy);
         EnableWindow(ctl(ID_EXISTING), !busy);
+        EnableWindow(ctl(ID_UNINSTALL), !busy && st != NOT_INSTALLED);
         EnableWindow(ctl(ID_BUILD), !busy && st != NOT_INSTALLED);
         EnableWindow(ctl(ID_ROMBROWSE), !busy);
         EnableWindow(ctl(ID_TOOLBROWSE), !busy);
@@ -961,6 +1087,7 @@ static void refresh_page(void) {
         BOOL running = relay_running();
         EnableWindow(ctl(ID_HOST), !busy);
         EnableWindow(ctl(ID_STOP), !busy && running);
+        EnableWindow(ctl(ID_UNSERVER), !busy);
         EnableWindow(ctl(ID_COPY), g_friend_addr[0] != 0);
         SetWindowTextW(ctl(ID_HOST), running ? L"Set up my server again" : L"Set up my server for me");
         SendMessageW(ctl(ID_AUTOSTART), BM_SETCHECK, autostart_on() ? BST_CHECKED : BST_UNCHECKED, 0);
@@ -1146,6 +1273,52 @@ static void on_command(int id) {
         ShellExecuteW(g_wnd, L"open", id == ID_PLAY ? exe : d, NULL, d, SW_SHOWNORMAL);
         break;
     }
+    case ID_UNINSTALL: {
+        if (game_state(i) == NOT_INSTALLED) break;
+        wchar_t d[MAX_PATH];
+        game_dir(i, d);
+        if (running_from(d)) {
+            wchar_t* m = wdup_printf(L"%s or its launcher is still open. Close it first, then press Uninstall again.", GAMES[i].title);
+            MessageBoxW(g_wnd, m, L"Recomp Hub", MB_ICONINFORMATION);
+            free(m);
+            break;
+        }
+        if (hub_made_folder(i)) {
+            wchar_t* m = wdup_printf(L"Uninstall %s?\n\nThis deletes %s: the game files, the built game, and its save data "
+                                     L"(your Miis and records). To keep those, first export them with Save data in the "
+                                     L"game's launcher (press Play).\n\nYour disc image isn't touched.", GAMES[i].title, d);
+            int yes = MessageBoxW(g_wnd, m, L"Uninstall", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES;
+            free(m);
+            if (yes) start_job(uninstall_job, (void*)(INT_PTR)i, i, ID_DLPROG);
+        } else {
+            /* A folder the player chose with "Use a folder I already have": it may hold their own work, so the hub
+               only lets go of it and deletes nothing. */
+            wchar_t* m = wdup_printf(L"Recomp Hub didn't install %s; you chose this folder:\n\n%s\n\nRemove it from Recomp Hub? "
+                                     L"Nothing is deleted: the folder stays where it is.", GAMES[i].title, d);
+            int yes = MessageBoxW(g_wnd, m, L"Uninstall", MB_YESNO | MB_ICONQUESTION) == IDYES;
+            free(m);
+            if (yes) {
+                hub_key(key, "dir", i);
+                hub_set(key, NULL);
+                hub_key(key, "version", i);
+                hub_set(key, NULL);
+                _snwprintf(g_msg[i][0], 600, L"Recomp Hub no longer uses %s (nothing was deleted).", d);
+                g_msg[i][1][0] = 0;
+                refresh_nav();
+                refresh_page();
+            }
+        }
+        break;
+    }
+    case ID_UNSERVER:
+        if (MessageBoxW(g_wnd, L"Uninstall your server from this PC?\n\nThis stops it, turns off starting at sign-in, closes the "
+                               L"router port if Recomp Hub opened it, removes the Windows Firewall rule (Windows will ask), "
+                               L"and deletes the Server folder. Joining a friend's server still works.",
+                        L"Uninstall server", MB_YESNO | MB_ICONQUESTION) != IDYES)
+            break;
+        SetWindowTextW(ctl(ID_OSTATUS), L"");
+        start_job(remove_server_job, NULL, -1, 0);
+        break;
     case ID_HOST:
         SetWindowTextW(ctl(ID_OSTATUS), L"");
         start_job(host_job, NULL, -1, 0);

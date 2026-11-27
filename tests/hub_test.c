@@ -41,6 +41,13 @@ int wmain(void) {
     raw = read_file(ini, &rl);
     CHECK(raw && rl == strlen(seed) && !memcmp(raw, seed, rl), L"same value rewrites the file byte for byte (Windows line ends kept)");
     free(raw);
+    ini_set(ini, "game", NULL);
+    raw = read_file(ini, NULL);
+    CHECK(raw && !strcmp(raw, "dolphin_tool=C:\\x\\DolphinTool.exe\r\ngfx_backend=3\r\n"), L"NULL removes the key and only that line");
+    free(raw);
+    wchar_t none[MAX_PATH];
+    path_join(none, tmp, L"no-such.ini");
+    CHECK(ini_set(none, "relay", NULL) && !file_exists(none), L"removing from a missing file creates nothing");
 
     wprintf(L"game folders\n");
     wchar_t d[MAX_PATH];
@@ -61,6 +68,12 @@ int wmain(void) {
     path_join(f, d, L"launcher.ini");
     ini_get(f, "relay", v, MAX_PATH);
     CHECK(!wcscmp(v, L"10.0.0.7"), L"game's launcher.ini has relay=%s", v);
+    CHECK(hub_made_folder(2), L"the hub's own Games folder counts as installed by the hub");
+    hub_set("dir_Party9Recomp", L"D:\\My own MP9");
+    CHECK(!hub_made_folder(2), L"a folder the player chose doesn't (Uninstall then deletes nothing)");
+    hub_set("dir_Party9Recomp", NULL);
+    game_dir(2, v);
+    CHECK(!wcscmp(v, d), L"forgetting the folder goes back to the default");
 
     wprintf(L"unpacked release layouts\n");
     wchar_t u[MAX_PATH], sub[MAX_PATH], root[MAX_PATH];
@@ -105,6 +118,10 @@ int wmain(void) {
     wchar_t ip[64] = L"";
     CHECK(local_ip(ip, 64), L"this PC's network address: %s", ip);
     CHECK(count_processes(L"explorer.exe", FALSE) > 0, L"process list works");
+    wchar_t win[MAX_PATH];
+    GetWindowsDirectoryW(win, MAX_PATH);
+    CHECK(running_from(win), L"running_from sees programs in %s", win);
+    CHECK(!running_from(tmp), L"running_from: nothing runs from an empty folder");
 
     wprintf(L"DolphinTool\n");
     wchar_t tool[MAX_PATH] = L"";
