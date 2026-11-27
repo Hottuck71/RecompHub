@@ -14,6 +14,11 @@
    Settings live in RecompHub.ini beside this program. No game code or data is in here or downloaded: each
    recomp release contains none, and the game is built from the player's own disc.
 
+   Updates: at start and every six hours the hub asks GitHub for each installed game's newest release. With
+   "Keep games up to date" on (the default), a newer release of a game the hub installed is downloaded and put in
+   place by itself, keeping settings, save and build, and the game is then built again from the disc it was built
+   from, so the new version is what plays. A game in a folder the player chose only shows that an update is there.
+
    RecompHub.exe --server   starts the relay hidden (if it isn't running) and exits; used for "start with Windows".
 
    Build: see build.ps1 (MinGW-w64 gcc). */
@@ -41,7 +46,7 @@
 #include <string.h>
 #include <wchar.h>
 
-#define HUB_VERSION L"1.1.0"
+#define HUB_VERSION L"1.2.0"
 #define RELAY_PORT 51020
 #define RELAY_PORT_S L"51020"
 #define FIREWALL_RULE L"Recomp Hub relay"
@@ -72,12 +77,16 @@ enum {
     ID_BUILDPROG, ID_PLAY, ID_OPENDIR, ID_PLAYNOTE, ID_UNINSTALL,
     ID_OTITLE = 300, ID_OBLURB, ID_OG1, ID_HOST, ID_STOP, ID_COPY, ID_OSTATUS, ID_AUTOSTART, ID_OG2, ID_JOINLBL,
     ID_JOIN, ID_USEJOIN, ID_JOINNOTE, ID_UNSERVER,
-    ID_HEAD = 400, ID_SUBHEAD,
+    ID_HEAD = 400, ID_SUBHEAD, ID_AUTOUPDATE, ID_UPDATENOTE,
 };
 #define WM_JOB_STATUS (WM_APP + 1) /* wParam: 0 game status, 1 build status, 2 online text; lParam: malloc'd text */
 #define WM_JOB_PROGRESS (WM_APP + 2) /* wParam: 0..100, or (WPARAM)-1 for "busy, no percentage" */
 #define WM_JOB_DONE (WM_APP + 3)
+#define WM_UPDATES_CHECKED (WM_APP + 4) /* lParam: malloc'd wchar_t[NGAMES][64], each game's newest version or "" */
 #define TIMER_BUILD 1
+#define TIMER_UPDATES 2
+#define UPDATE_EVERY_MS (6u * 60u * 60u * 1000u)
+#define UPDATE_RETRY_MS (2u * 60u * 1000u) /* a game was open when its update was due */
 
 static HWND g_wnd;
 static HINSTANCE g_inst;
@@ -92,6 +101,11 @@ static wchar_t g_msg[NGAMES][2][600]; /* each game's newest job messages: [0] fi
 static DWORD g_build_started;
 static wchar_t g_dir[MAX_PATH], g_ini[MAX_PATH], g_exe[MAX_PATH];
 static wchar_t g_friend_addr[128];
+enum { JOB_OTHER, JOB_DOWNLOAD, JOB_BUILD };
+static int g_job_kind = JOB_OTHER;
+static wchar_t g_latest[NGAMES][64];     /* each game's newest release on GitHub, "v" taken off; "" not known yet */
+static volatile LONG g_checking_updates;
+static int g_queue[8], g_queue_len;      /* jobs waiting their turn: game * 2 + 0 download, + 1 build */
 
 #define S(x) MulDiv((x), g_dpi, 96)
 static HWND ctl(int id) { return GetDlgItem(g_wnd, id); }
@@ -251,6 +265,66 @@ static int game_state(int i) {
     if (h == INVALID_HANDLE_VALUE) return INSTALLED;
     FindClose(h);
     return BUILT;
+}
+
+/* The installed toolkit's version, from its builder\version.txt (what the game's own launcher builds with). */
+static void installed_version(int i, wchar_t* out, int cap) {
+    wchar_t p[MAX_PATH];
+    out[0] = 0;
+    if (game_file(i, L"builder\\version.txt", p)) {
+        char* v = read_file(p, NULL);
+        if (v) {
+            char* a = v;
+            if ((unsigned char)a[0] == 0xEF && (unsigned char)a[1] == 0xBB && (unsigned char)a[2] == 0xBF) a += 3;
+            char* e = a + strcspn(a, "\r\n \t");
+            *e = 0;
+            wchar_t* w = from_utf8(a, -1);
+            wcsncpy(out, w, cap - 1);
+            out[cap - 1] = 0;
+            free(w);
+            free(v);
+        }
+    }
+    if (!out[0]) {
+        char key[64];
+        hub_key(key, "version", i);
+        hub_get(key, out, cap);
+    }
+}
+/* TRUE when version a ("1.10.0", "v0.2.0") is newer than b. Numbers compare as numbers; a missing part is 0. */
+static BOOL version_newer(const wchar_t* a, const wchar_t* b) {
+    if (*a == L'v' || *a == L'V') a++;
+    if (*b == L'v' || *b == L'V') b++;
+    while (*a || *b) {
+        long x = wcstol(a, (wchar_t**)&a, 10), y = wcstol(b, (wchar_t**)&b, 10);
+        if (x != y) return x > y;
+        while (*a && *a != L'.') a++;
+        while (*b && *b != L'.') b++;
+        if (*a == L'.') a++;
+        if (*b == L'.') b++;
+    }
+    return FALSE;
+}
+static BOOL update_available(int i) {
+    wchar_t have[64];
+    if (!g_latest[i][0] || game_state(i) == NOT_INSTALLED) return FALSE;
+    installed_version(i, have, 64);
+    return !have[0] || version_newer(g_latest[i], have);
+}
+/* TRUE when the built game is from an older version than the files now installed: an update that still needs
+   building (the game's launcher writes the version it built with to game-build.txt). */
+static BOOL build_outdated(int i) {
+    wchar_t p[MAX_PATH], have[64];
+    if (game_state(i) != BUILT || !game_file(i, L"game-build.txt", p)) return FALSE;
+    char* b = read_file(p, NULL);
+    if (!b) return FALSE;
+    b[strcspn(b, "\r\n")] = 0;
+    wchar_t* built = from_utf8(b, -1);
+    free(b);
+    installed_version(i, have, 64);
+    BOOL behind = have[0] && wcscmp(built, have) != 0;
+    free(built);
+    return behind;
 }
 
 /* TRUE when the game's folder is the one Recomp Hub made (Games\<recomp>), not one the player chose. */
@@ -731,6 +805,34 @@ done:
     return 0;
 }
 
+/* Asks GitHub for each installed game's newest release. It changes nothing: the window decides what to do. */
+static DWORD WINAPI check_updates_job(LPVOID arg) {
+    (void)arg;
+    wchar_t(*found)[64] = calloc(NGAMES, sizeof *found);
+    for (int i = 0; i < NGAMES; i++) {
+        if (game_state(i) == NOT_INSTALLED) continue;
+        wchar_t api[256], url[2048], tag[64];
+        char* json = NULL;
+        _snwprintf(api, 256, L"https://api.github.com/repos/%s/releases/latest", GAMES[i].github);
+        if (http_get(api, L"application/vnd.github+json", NULL, &json, NULL) == 200 && json && find_release_zip(json, url, tag))
+            wcscpy(found[i], tag[0] == L'v' ? tag + 1 : tag);
+        free(json);
+    }
+    PostMessageW(g_wnd, WM_UPDATES_CHECKED, 0, (LPARAM)found);
+    InterlockedExchange(&g_checking_updates, 0);
+    return 0;
+}
+static void check_updates(void) {
+    if (InterlockedCompareExchange(&g_checking_updates, 1, 0)) return;
+    HANDLE t = CreateThread(NULL, 0, check_updates_job, NULL, 0, NULL);
+    if (t) CloseHandle(t); else g_checking_updates = 0;
+}
+static BOOL auto_update_on(void) {
+    wchar_t v[8];
+    hub_get("auto_update", v, 8);
+    return wcscmp(v, L"0") != 0;
+}
+
 typedef struct { int game; wchar_t rom[MAX_PATH], tool[MAX_PATH]; } BuildArgs;
 static DWORD WINAPI build_job(LPVOID arg) {
     BuildArgs* a = arg;
@@ -979,6 +1081,8 @@ static void create_controls(void) {
                      12, i < NGAMES ? 80 + i * 78 : 80 + i * 78 + 18, 248, 72, ID_NAV + i, NULL);
         (void)b;
     }
+    add(L"BUTTON", L"Keep games up to date", V | WS_TABSTOP | BS_AUTOCHECKBOX, 20, 80 + NGAMES * 78 + 18 + 84, 236, 22, ID_AUTOUPDATE, NULL);
+    add(L"STATIC", L"New releases install and build by themselves.", V, 38, 80 + NGAMES * 78 + 18 + 106, 222, 34, ID_UPDATENOTE, g_font_small);
     const int X = 290, W = 572;
     /* a game's page */
     add(L"STATIC", L"", 0, X, 16, W, 36, ID_TITLE, g_font_big);
@@ -1029,8 +1133,14 @@ static void refresh_nav(void) {
         char key[64];
         hub_key(key, "version", i);
         hub_get(key, ver, 64);
-        _snwprintf(key_note, 160, L"%s%s%s", st == BUILT ? L"Ready to play" : st == INSTALLED ? L"Installed: needs building" : L"Not installed",
-                   ver[0] ? L"  \x00B7  " : L"", ver);
+        installed_version(i, ver, 64);
+        if (update_available(i))
+            _snwprintf(key_note, 160, L"Update %s available  \x00B7  %s", g_latest[i], ver);
+        else if (build_outdated(i))
+            _snwprintf(key_note, 160, L"Updated to %s: needs building", ver);
+        else
+            _snwprintf(key_note, 160, L"%s%s%s", st == BUILT ? L"Ready to play" : st == INSTALLED ? L"Installed: needs building" : L"Not installed",
+                       ver[0] ? L"  \x00B7  " : L"", ver);
         SendMessageW(ctl(ID_NAV + i), BCM_SETNOTE, 0, (LPARAM)key_note);
     }
     SendMessageW(ctl(ID_NAV + PAGE_ONLINE), BCM_SETNOTE, 0,
@@ -1053,14 +1163,21 @@ static void refresh_page(void) {
             wchar_t d[MAX_PATH], ver[64] = L"";
             char key[64];
             game_dir(i, d);
-            hub_key(key, "version", i);
-            hub_get(key, ver, 64);
+            (void)key;
+            installed_version(i, ver, 64);
             wchar_t* t = st == NOT_INSTALLED ? wdup_printf(L"%s isn't installed yet. About 160 MB from GitHub.", GAMES[i].repo)
-                                             : wdup_printf(L"Installed%s%s in %s", ver[0] ? L" " : L"", ver, d);
+                         : update_available(i) ? wdup_printf(L"Installed %s. Version %s is out: press Update.", ver, g_latest[i])
+                                               : wdup_printf(L"Installed%s%s in %s", ver[0] ? L" " : L"", ver, d);
             SetWindowTextW(ctl(ID_GETSTATUS), t);
             free(t);
         }
-        SetWindowTextW(ctl(ID_DOWNLOAD), st == NOT_INSTALLED ? L"Download && install" : L"Update to newest");
+        if (st != NOT_INSTALLED && update_available(i)) {
+            wchar_t label[80];
+            _snwprintf(label, 80, L"Update to %s", g_latest[i]);
+            SetWindowTextW(ctl(ID_DOWNLOAD), label);
+        } else {
+            SetWindowTextW(ctl(ID_DOWNLOAD), st == NOT_INSTALLED ? L"Download && install" : L"Update to newest");
+        }
         EnableWindow(ctl(ID_DOWNLOAD), !busy);
         EnableWindow(ctl(ID_EXISTING), !busy);
         EnableWindow(ctl(ID_UNINSTALL), !busy && st != NOT_INSTALLED);
@@ -1069,7 +1186,7 @@ static void refresh_page(void) {
         EnableWindow(ctl(ID_TOOLBROWSE), !busy);
         EnableWindow(ctl(ID_PLAY), st == BUILT && !(busy && mine));
         EnableWindow(ctl(ID_OPENDIR), st != NOT_INSTALLED);
-        SetWindowTextW(ctl(ID_BUILD), st == BUILT ? L"Build again" : L"Build");
+        SetWindowTextW(ctl(ID_BUILD), build_outdated(i) ? L"Build the update" : st == BUILT ? L"Build again" : L"Build");
         if (!(busy && mine)) {
             wchar_t rom[MAX_PATH] = L"", tool[MAX_PATH] = L"";
             char key[64];
@@ -1078,7 +1195,9 @@ static void refresh_page(void) {
             SetWindowTextW(ctl(ID_ROM), rom);
             find_dolphin_tool(tool);
             SetWindowTextW(ctl(ID_TOOL), tool);
-            SetWindowTextW(ctl(ID_BUILDSTATUS), g_msg[i][1][0] ? g_msg[i][1] : st == BUILT ? L"Built and ready." : st == INSTALLED ? L"Pick your disc image and press Build." : L"Install the game files first (step 1).");
+            SetWindowTextW(ctl(ID_BUILDSTATUS), g_msg[i][1][0] ? g_msg[i][1]
+                                                : build_outdated(i) ? L"Updated: press Build again so the new version is the one that plays."
+                                                : st == BUILT ? L"Built and ready." : st == INSTALLED ? L"Pick your disc image and press Build." : L"Install the game files first (step 1).");
             SetWindowTextW(ctl(ID_BUILDDETAIL), L"");
         }
         ShowWindow(ctl(ID_DLPROG), busy && mine && g_prog_id == ID_DLPROG ? SW_SHOW : SW_HIDE);
@@ -1151,6 +1270,86 @@ static void start_job(LPTHREAD_START_ROUTINE fn, void* arg, int game, int prog_i
     if (t) CloseHandle(t); else { g_busy = 0; g_job_game = -1; refresh_page(); }
 }
 
+static void enqueue(int game, int build, BOOL first) {
+    int item = game * 2 + (build ? 1 : 0);
+    for (int k = 0; k < g_queue_len; k++)
+        if (g_queue[k] == item) return;
+    if (g_queue_len == (int)(sizeof g_queue / sizeof *g_queue)) return;
+    if (first) {
+        memmove(g_queue + 1, g_queue, g_queue_len * sizeof *g_queue);
+        g_queue[0] = item;
+    } else {
+        g_queue[g_queue_len] = item;
+    }
+    g_queue_len++;
+}
+
+/* What a game is built again from after an update: the disc it was unpacked from (its game folder), else the disc
+   image picked before. FALSE when there's neither. */
+static BOOL build_source(int i, BuildArgs* a) {
+    wchar_t d[MAX_PATH], p[MAX_PATH];
+    char key[64];
+    game_dir(i, d);
+    a->game = i;
+    a->tool[0] = 0;
+    _snwprintf(p, MAX_PATH, L"%s\\game\\DATA\\sys\\main.dol", d);
+    wchar_t q[MAX_PATH];
+    _snwprintf(q, MAX_PATH, L"%s\\game\\sys\\main.dol", d);
+    if (file_exists(p) || file_exists(q)) {
+        path_join(a->rom, d, L"game");
+        return TRUE;
+    }
+    hub_key(key, "rom", i);
+    hub_get(key, a->rom, MAX_PATH);
+    if (!a->rom[0] || !file_exists(a->rom)) return FALSE;
+    find_dolphin_tool(a->tool);
+    return file_exists(a->tool);
+}
+
+static void start_build(BuildArgs* a) {
+    char key[64];
+    if (a->tool[0]) hub_set("dolphin_tool", a->tool);
+    if (!dir_exists(a->rom)) {
+        hub_key(key, "rom", a->game);
+        hub_set(key, a->rom);
+    }
+    g_build_started = GetTickCount();
+    SetTimer(g_wnd, TIMER_BUILD, 1000, NULL);
+    g_job_kind = JOB_BUILD;
+    start_job(build_job, a, a->game, ID_BUILDPROG);
+}
+
+/* Starts the next waiting job, if nothing is running. A game that's open waits: its files are in use. */
+static void run_queue(void) {
+    while (!g_busy && g_queue_len) {
+        int item = g_queue[0], i = item / 2, build = item % 2;
+        wchar_t d[MAX_PATH];
+        game_dir(i, d);
+        if (running_from(d)) {
+            _snwprintf(g_msg[i][build], 600, build ? L"The update is installed. Close %s to let it build."
+                                                   : L"Version %s is ready to install. Close %s to let it update.",
+                       build ? GAMES[i].title : g_latest[i], GAMES[i].title);
+            SetTimer(g_wnd, TIMER_UPDATES, UPDATE_RETRY_MS, NULL);
+            refresh_page();
+            return;
+        }
+        g_queue_len--;
+        memmove(g_queue, g_queue + 1, g_queue_len * sizeof *g_queue);
+        if (!build) {
+            if (!update_available(i)) continue;
+            g_job_kind = JOB_DOWNLOAD;
+            start_job(download_job, (void*)(INT_PTR)i, i, ID_DLPROG);
+        } else {
+            BuildArgs* a = calloc(1, sizeof *a);
+            if (!build_outdated(i) || !build_source(i, a)) {
+                free(a);
+                continue;
+            }
+            start_build(a);
+        }
+    }
+}
+
 /* While building: elapsed time and the newest line of the game's build-log.txt. */
 static void show_build_detail(void) {
     if (g_job_game < 0 || g_page != g_job_game) return;
@@ -1197,8 +1396,15 @@ static void on_command(int id) {
     wchar_t buf[MAX_PATH];
     switch (id) {
     case ID_DOWNLOAD:
+        g_job_kind = JOB_DOWNLOAD;
         start_job(download_job, (void*)(INT_PTR)i, i, ID_DLPROG);
         break;
+    case ID_AUTOUPDATE: {
+        BOOL on = SendMessageW(ctl(ID_AUTOUPDATE), BM_GETCHECK, 0, 0) == BST_CHECKED;
+        hub_set("auto_update", on ? L"1" : L"0");
+        if (on) check_updates();
+        break;
+    }
     case ID_EXISTING:
         if (pick_folder(buf)) {
             wchar_t l[MAX_PATH];
@@ -1257,12 +1463,7 @@ static void on_command(int id) {
             free(a);
             break;
         }
-        hub_key(key, "rom", i);
-        hub_set(key, a->rom);
-        if (a->tool[0]) hub_set("dolphin_tool", a->tool);
-        g_build_started = GetTickCount();
-        SetTimer(g_wnd, TIMER_BUILD, 1000, NULL);
-        start_job(build_job, a, i, ID_BUILDPROG);
+        start_build(a);
         break;
     }
     case ID_PLAY:
@@ -1368,8 +1569,11 @@ static LRESULT CALLBACK wnd_proc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
     case WM_CREATE:
         g_wnd = w;
         create_controls();
+        SendMessageW(ctl(ID_AUTOUPDATE), BM_SETCHECK, auto_update_on() ? BST_CHECKED : BST_UNCHECKED, 0);
         refresh_nav();
         refresh_page();
+        check_updates();
+        SetTimer(w, TIMER_UPDATES, UPDATE_EVERY_MS, NULL);
         return 0;
     case WM_COMMAND:
         if (HIWORD(wp) == BN_CLICKED) on_command(LOWORD(wp));
@@ -1378,7 +1582,7 @@ static LRESULT CALLBACK wnd_proc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         HDC dc = (HDC)wp;
         SetBkColor(dc, RGB(255, 255, 255));
         int id = GetDlgCtrlID((HWND)lp);
-        SetTextColor(dc, id == ID_SUBHEAD || id == ID_BUILDDETAIL || id == ID_PLAYNOTE || id == ID_JOINNOTE ? RGB(96, 96, 96) : RGB(20, 20, 20));
+        SetTextColor(dc, id == ID_SUBHEAD || id == ID_UPDATENOTE || id == ID_BUILDDETAIL || id == ID_PLAYNOTE || id == ID_JOINNOTE ? RGB(96, 96, 96) : RGB(20, 20, 20));
         return (LRESULT)g_white;
     }
     case WM_PAINT: {
@@ -1433,14 +1637,46 @@ static LRESULT CALLBACK wnd_proc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
     }
     case WM_TIMER:
         if (wp == TIMER_BUILD) show_build_detail();
+        if (wp == TIMER_UPDATES) {
+            SetTimer(w, TIMER_UPDATES, UPDATE_EVERY_MS, NULL); /* back to the usual pace after a retry */
+            check_updates();
+        }
         return 0;
-    case WM_JOB_DONE:
+    case WM_UPDATES_CHECKED: {
+        wchar_t(*found)[64] = (wchar_t(*)[64])lp;
+        for (int i = 0; i < NGAMES; i++) {
+            if (found[i][0]) wcscpy(g_latest[i], found[i]);
+            /* Only games the hub installed update by themselves; a folder the player chose may be their own work. */
+            if (auto_update_on() && hub_made_folder(i) && update_available(i)) enqueue(i, 0, FALSE);
+            else if (auto_update_on() && hub_made_folder(i) && build_outdated(i)) enqueue(i, 1, FALSE);
+        }
+        free(found);
+        refresh_nav();
+        if (!g_busy) refresh_page();
+        run_queue();
+        return 0;
+    }
+    case WM_JOB_DONE: {
+        int game = g_job_game, kind = g_job_kind;
         KillTimer(w, TIMER_BUILD);
         g_busy = 0;
         g_job_game = -1;
+        g_job_kind = JOB_OTHER;
+        /* An update of a game that was built: build it again from its disc, so the new version is what plays. */
+        if (kind == JOB_DOWNLOAD && game >= 0 && build_outdated(game)) {
+            BuildArgs a;
+            if (build_source(game, &a)) {
+                enqueue(game, 1, TRUE);
+                _snwprintf(g_msg[game][1], 600, L"Building the update from your disc. This takes a while; you can leave it running.");
+            } else {
+                _snwprintf(g_msg[game][1], 600, L"Updated. Pick your disc image and press \"Build the update\" so the new version plays.");
+            }
+        }
         refresh_nav();
         refresh_page();
+        run_queue();
         return 0;
+    }
     case WM_CLOSE:
         if (g_busy && MessageBoxW(w, L"Recomp Hub is still working. Close it anyway? (A build in progress keeps running until it finishes.)",
                                   L"Recomp Hub", MB_YESNO | MB_ICONQUESTION) != IDYES)

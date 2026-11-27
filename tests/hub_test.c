@@ -75,6 +75,41 @@ int wmain(void) {
     game_dir(2, v);
     CHECK(!wcscmp(v, d), L"forgetting the folder goes back to the default");
 
+    wprintf(L"updates\n");
+    CHECK(version_newer(L"0.2.0", L"0.1.0") && version_newer(L"v1.10.0", L"1.9.9") && version_newer(L"1.1", L"1.0.5"),
+          L"newer versions compare as numbers, with or without v");
+    CHECK(!version_newer(L"0.1.0", L"0.1.0") && !version_newer(L"1.0", L"1.0.0") && !version_newer(L"0.9.9", L"1.0.0"),
+          L"the same or older isn't newer");
+    wchar_t bd[MAX_PATH];
+    path_join(bd, d, L"builder");
+    CreateDirectoryW(bd, NULL);
+    path_join(f, bd, L"version.txt");
+    write_file(f, "\xEF\xBB\xBF" "0.1.0\r\n", 10);
+    installed_version(2, v, 64);
+    CHECK(!wcscmp(v, L"0.1.0"), L"installed version from builder\\version.txt: %s", v);
+    path_join(f, d, L"game-build.txt");
+    write_file(f, "0.1.0\nabc\nplain\n", 16);
+    CHECK(!build_outdated(2), L"a build of the installed version isn't behind");
+    wcscpy(g_latest[2], L"0.2.0");
+    CHECK(update_available(2), L"0.2.0 on GitHub is an update for 0.1.0");
+    path_join(f, bd, L"version.txt");
+    write_file(f, "0.2.0", 5);
+    CHECK(!update_available(2), L"after updating, no update is left");
+    CHECK(build_outdated(2), L"the 0.1.0 build is behind the 0.2.0 files, so it's built again");
+    BuildArgs ba;
+    CHECK(!build_source(2, &ba), L"no disc to build from yet");
+    wchar_t gd[MAX_PATH];
+    _snwprintf(gd, MAX_PATH, L"%s\\game", d);
+    CreateDirectoryW(gd, NULL);
+    wcscat(gd, L"\\DATA");
+    CreateDirectoryW(gd, NULL);
+    wcscat(gd, L"\\sys");
+    CreateDirectoryW(gd, NULL);
+    path_join(f, gd, L"main.dol");
+    write_file(f, "x", 1);
+    CHECK(build_source(2, &ba) && wcsstr(ba.rom, L"\\game") && !ba.tool[0], L"the unpacked disc is built from again, no DolphinTool needed");
+    g_latest[2][0] = 0;
+
     wprintf(L"unpacked release layouts\n");
     wchar_t u[MAX_PATH], sub[MAX_PATH], root[MAX_PATH];
     path_join(u, tmp, L"unpackA");

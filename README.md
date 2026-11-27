@@ -22,6 +22,12 @@ Put `RecompHub.exe` in a folder with plenty of free space (about 20 GB per game)
 2. **Get the game files.** *Download & install* fetches that recomp's newest release from GitHub (about 160 MB)
    into `Games\<recomp>` next to the hub. If you already unpacked a recomp, use *Use a folder I already have*
    instead. *Update to newest* later keeps your settings, save and build.
+   **Updates come by themselves:** when a recomp puts out a new release on GitHub, the hub sees it (when it opens,
+   and every six hours while open), downloads and installs it, then builds the game again from the disc you built
+   it from, so the new version is the one you play. Your settings and save are kept. A game that's open waits until
+   you close it. Untick *Keep games up to date* (bottom left) to update only when you press *Update to …*. A game in
+   a folder you picked yourself (*Use a folder I already have*) is never changed by itself: the hub only shows that
+   an update is out.
 3. **Build.** Pick your disc image (.iso, .wbfs, .rvz...). DolphinTool (from Dolphin) unpacks it, and the hub
    finds it by itself when it can. Press *Build*. The first build takes 30 minutes or more. A wrong disc is
    reported straight away.
@@ -76,6 +82,11 @@ room for four games. The recomp must work the way these three do: a GitHub relea
 
 - Building runs `Launcher.exe --test-build <disc>` in the game's folder: that recomp's own headless setup. While it
   runs, the hub shows the newest line of the game's `build-log.txt`.
+- Updates: the installed version is the game's `builder\version.txt`; the newest is the tag of the recomp's latest
+  GitHub release (`v1.1.0` is `1.1.0`, compared number by number). After an update, the game counts as needing a
+  build while its `game-build.txt` (written by the game's launcher) names an older version; it is built again from
+  the game's unpacked disc (`game\`), or else the disc image picked before. To ship an update to every hub, publish
+  a GitHub release with a newer tag and the `.zip`, and raise `builder\version.txt` to match.
 - The hub's settings are in `RecompHub.ini` next to it. It changes only two keys in each game's `launcher.ini`:
   `dolphin_tool` and `relay`.
 - The relay is `wsr_relay.exe` from an installed recomp, copied to `Server\`. Its log is `Server\relay-log.txt`.
