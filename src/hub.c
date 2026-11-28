@@ -51,7 +51,7 @@
 #include <wctype.h>
 #include <wincodec.h>
 
-#define HUB_VERSION L"1.4.0"
+#define HUB_VERSION L"1.5.0"
 #define RELAY_PORT 51020
 #define RELAY_PORT_S L"51020"
 #define FIREWALL_RULE L"Recomp Hub relay"
@@ -1569,6 +1569,7 @@ static LRESULT CALLBACK wnd_proc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         ensure_music_folder();
         ensure_art_folder();
         load_tile_pictures();
+        fetch_covers(); /* box art for games without a picture, in the background */
         start_intro(.55, .09); /* the tiles drop in */
         layout_hits();
         if (music_on()) music_next();
@@ -1679,6 +1680,9 @@ static LRESULT CALLBACK wnd_proc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
             SetTimer(w, TIMER_UPDATES, UPDATE_EVERY_MS, NULL); /* back to the usual pace after a retry */
             check_updates();
         }
+        return 0;
+    case WM_COVERS_FETCHED:
+        if (load_tile_pictures()) redraw();
         return 0;
     case WM_UPDATES_CHECKED: {
         wchar_t(*found)[64] = (wchar_t(*)[64])lp;

@@ -265,7 +265,7 @@ int wmain(void) {
     write_file(bmp, (const char*)bm, sizeof bm);
     BOOL changed = load_tile_pictures();
     CHECK(changed && g_pic[1].px && g_pic[1].w == 8 && g_pic[1].h == 6 && !g_pic[0].px && !g_pic[2].px, L"Wii Party.bmp read for Wii Party only");
-    Col left = picture_at(&g_pic[1], .1f, .5f, 8.f / 6), right = picture_at(&g_pic[1], .9f, .5f, 8.f / 6);
+    Col left = picture_at(&g_pic[1], .1f, .5f, 8.f / 6, 120.f), right = picture_at(&g_pic[1], .9f, .5f, 8.f / 6, 120.f);
     CHECK(left.r > 200 && left.b < 50 && right.b > 200 && right.r < 50, L"its colours come through (red left, blue right)");
     CHECK(!load_tile_pictures(), L"reading again with nothing new changes nothing");
     DeleteFileW(bmp);
@@ -274,6 +274,44 @@ int wmain(void) {
     write_file(bmp, "not a picture", 13);
     load_tile_pictures();
     CHECK(!g_pic[2].px, L"a broken picture is ignored");
+    DeleteFileW(bmp);
+
+    wprintf(L"box art\n");
+    CHECK(!wcscmp(game_id(0), L"RZTE01") && !wcscmp(game_id(1), L"SUPE01") && !wcscmp(game_id(2), L"SSQE01"), L"each recomp's disc ID");
+    wchar_t cov[MAX_PATH], cdir[MAX_PATH];
+    cover_path(1, cov);
+    CHECK(wcsstr(cov, L"\\Tile art\\Covers\\SUPE01.png") != NULL, L"covers go in Tile art\\Covers, named by disc ID");
+    wcscpy(cdir, cov);
+    *wcsrchr(cdir, L'\\') = 0;
+    CreateDirectoryW(cdir, NULL);
+    /* a tall 6 x 12 green "cover" */
+    static unsigned char tb[54 + 6 * 12 * 4];
+    memset(tb, 0, sizeof tb);
+    p = tb;
+    memcpy(p, "BM", 2); p += 2; PUT4(sizeof tb); PUT4(0); PUT4(54);
+    PUT4(40); PUT4(6); PUT4(12); PUT2(1); PUT2(32); PUT4(0); PUT4(6 * 12 * 4); PUT4(2835); PUT4(2835); PUT4(0); PUT4(0);
+    for (int n = 0; n < 6 * 12; n++) { *p++ = 40; *p++ = 220; *p++ = 40; *p++ = 255; }
+    write_file(cov, (const char*)tb, sizeof tb);
+    load_tile_pictures();
+    CHECK(g_pic[1].px && g_pic[1].h == 12 && !g_pic_own[1], L"with no picture of yours, a game shows its cover");
+    Col mid = picture_at(&g_pic[1], .5f, .5f, 4.f / 3, 180.f), side = picture_at(&g_pic[1], .03f, .5f, 4.f / 3, 180.f);
+    CHECK(mid.g > 200 && side.g < mid.g - 40 && side.g > side.r, L"a tall cover is whole in the middle, a dimmed blur of it at the sides (green %d, %d)", (int)mid.g, (int)side.g);
+    path_join(bmp, ad, L"party.jpg"); /* a .bmp named .jpg: Windows reads it by what it is */
+    write_file(bmp, (const char*)bm, sizeof bm);
+    load_tile_pictures();
+    CHECK(g_pic[1].w == 8 && g_pic_own[1], L"your own picture wins over the cover");
+    DeleteFileW(bmp);
+    DeleteFileW(cov);
+    load_tile_pictures();
+    memset(g_cover_tried, 0, sizeof g_cover_tried);
+    int got = fetch_covers_now();
+    BOOL all_png = TRUE;
+    for (int i = 0; i < NGAMES; i++) { cover_path(i, cov); all_png &= is_png(cov); }
+    load_tile_pictures();
+    CHECK(got == NGAMES && all_png && g_pic[0].px && g_pic[1].px && g_pic[2].px && g_pic[0].h > g_pic[0].w,
+          L"GameTDB: %d covers downloaded and shown (%d x %d)", got, g_pic[0].w, g_pic[0].h);
+    memset(g_cover_tried, 0, sizeof g_cover_tried);
+    CHECK(fetch_covers_now() == 0, L"covers already there aren't downloaded again");
 
     remove_tree(tmp);
     wprintf(failures ? L"\n%d FAILED\n" : L"\nall passed\n", failures);

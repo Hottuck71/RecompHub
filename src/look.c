@@ -190,10 +190,58 @@ static Col art_at(int art, float u, float v, float aspect, float pix) {
 }
 
 /* ---- tile pictures: the player's own, from the "Tile art" folder next to the hub ---- */
-typedef struct { int w, h; uint32_t* px; } Picture; /* 0xAARRGGBB */
+typedef struct {
+    int w, h;
+    uint32_t* px;   /* 0xAARRGGBB */
+    int sw, sh;
+    uint32_t* small; /* a few pixels across: stretched, it's a blur, for around a tall cover */
+} Picture;
 static Picture g_pic[NGAMES];
+static BOOL g_pic_own[NGAMES]; /* the player's picture (else a downloaded cover, or none) */
+static void free_picture(Picture* p) {
+    free(p->px);
+    free(p->small);
+    memset(p, 0, sizeof *p);
+}
+/* Averages the picture down to about 12 pixels across. */
+static void make_small(Picture* p) {
+    p->sw = p->w < 12 ? p->w : 12;
+    p->sh = p->h * p->sw / p->w < 1 ? 1 : p->h * p->sw / p->w;
+    p->small = malloc((size_t)p->sw * p->sh * 4);
+    if (!p->small) return;
+    for (int y = 0; y < p->sh; y++)
+        for (int x = 0; x < p->sw; x++) {
+            int x0 = x * p->w / p->sw, x1 = (x + 1) * p->w / p->sw, y0 = y * p->h / p->sh, y1 = (y + 1) * p->h / p->sh;
+            if (x1 <= x0) x1 = x0 + 1;
+            if (y1 <= y0) y1 = y0 + 1;
+            double r = 0, g = 0, b = 0;
+            int n = 0;
+            for (int yy = y0; yy < y1; yy++)
+                for (int xx = x0; xx < x1; xx++, n++) {
+                    uint32_t q = p->px[yy * p->w + xx];
+                    r += (q >> 16) & 255; g += (q >> 8) & 255; b += q & 255;
+                }
+            if (!n) n = 1;
+            p->small[y * p->sw + x] = 0xFF000000u | ((uint32_t)(r / n) << 16) | ((uint32_t)(g / n) << 8) | (uint32_t)(b / n);
+        }
+}
+
+/* ---- box art from GameTDB (the cover site Dolphin uses), for a game with no picture of the player's ---- */
+static const wchar_t* game_id(int i) { /* the USA disc each recomp is built from */
+    if (!wcscmp(GAMES[i].repo, L"ResortRecomp")) return L"RZTE01";
+    if (!wcscmp(GAMES[i].repo, L"PartyRecomp")) return L"SUPE01";
+    if (!wcscmp(GAMES[i].repo, L"Party9Recomp")) return L"SSQE01";
+    return NULL;
+}
+static void cover_path(int i, wchar_t* out) {
+    wchar_t dir[MAX_PATH], name[32];
+    path_join(dir, g_dir, L"Tile art\\Covers");
+    _snwprintf(name, 32, L"%s.png", game_id(i) ? game_id(i) : L"none");
+    path_join(out, dir, name);
+}
 
 static void art_dir(wchar_t* out) { path_join(out, g_dir, L"Tile art"); }
+static BOOL file_exists(const wchar_t* p);
 /* Lower case, letters and digits only: "Wii Sports Resort" -> "wiisportsresort". */
 static void norm_name(const wchar_t* s, wchar_t* out, int cap) {
     int n = 0;
@@ -281,7 +329,8 @@ static void ensure_art_folder(void) {
                         "  Wii Sports Resort.jpg   (or resort.jpg)\r\n"
                         "  Wii Party.jpg           (or party.jpg)\r\n"
                         "  Mario Party 9.jpg       (or marioparty9.jpg)\r\n"
-                        "Wide pictures fit best (about 4:3). A game without one gets a drawn tile.\r\n";
+                        "Wide pictures fit best (about 4:3).\r\n"
+                        "A game without a picture here shows its box art, downloaded from GameTDB into the Covers folder.\r\n";
         write_file(note, t, (DWORD)strlen(t));
     }
 }
@@ -290,7 +339,7 @@ static void invalidate_tile_cache(void);
 static BOOL load_tile_pictures(void) {
     wchar_t dir[MAX_PATH], pat[MAX_PATH], found[NGAMES][MAX_PATH];
     static FILETIME stamp[NGAMES];
-    static BOOL had[NGAMES];
+    static wchar_t had[NGAMES][MAX_PATH];
     FILETIME when[NGAMES];
     memset(found, 0, sizeof found);
     memset(when, 0, sizeof when);
@@ -311,23 +360,45 @@ static BOOL load_tile_pictures(void) {
     }
     BOOL changed = FALSE;
     for (int i = 0; i < NGAMES; i++) {
-        BOOL has = found[i][0] != 0;
-        if (has == had[i] && (!has || !CompareFileTime(&when[i], &stamp[i]))) continue; /* same as before */
-        free(g_pic[i].px);
-        memset(&g_pic[i], 0, sizeof g_pic[i]);
-        if (has) load_picture(found[i], &g_pic[i], 1024);
-        had[i] = has;
+        g_pic_own[i] = found[i][0] != 0;
+        if (!found[i][0] && game_id(i)) { /* no picture of the player's: the downloaded box art, if there is one */
+            WIN32_FILE_ATTRIBUTE_DATA a;
+            cover_path(i, found[i]);
+            if (GetFileAttributesExW(found[i], GetFileExInfoStandard, &a)) when[i] = a.ftLastWriteTime;
+            else found[i][0] = 0;
+        }
+        if (!wcscmp(found[i], had[i]) && (!found[i][0] || !CompareFileTime(&when[i], &stamp[i]))) continue; /* same as before */
+        free_picture(&g_pic[i]);
+        if (found[i][0] && load_picture(found[i], &g_pic[i], 1024)) make_small(&g_pic[i]);
+        wcscpy(had[i], found[i]);
         stamp[i] = when[i];
         changed = TRUE;
     }
     if (changed) invalidate_tile_cache();
     return changed;
 }
-/* The picture at (u, v), filling the tile (cropped to its shape, centred), smoothly sampled. */
-static Col picture_at(const Picture* p, float u, float v, float aspect) {
+static Col sample(const uint32_t* px, int w, int h, float u, float v);
+/* The picture at (u, v) of a tile w/h = aspect, ih pixels high. A wide picture fills it (cropped to fit, centred).
+   A tall one, like box art, is shown whole in the middle, with a soft shadow, over a dimmed blur of itself. */
+static Col picture_at(const Picture* p, float u, float v, float aspect, float ih) {
     float ia = (float)p->w / p->h;
+    if (ia < aspect * .75f && p->small) {
+        float iw = aspect * ih, bh = ih * .9f, bw = bh * ia; /* the box, in pixels */
+        float px = u * iw - iw / 2, py = v * ih - ih / 2;
+        float d = sd_round_box(px, py, bw / 2, bh / 2, ih * .015f);
+        Col back = mixc(sample(p->small, p->sw, p->sh, .5f + (u - .5f) * aspect / ia * .55f, .5f + (v - .5f) * .55f), BLACK, .3f);
+        back = mixc(back, BLACK, .45f * (1.f - smooth(0.f, ih * .07f, sd_round_box(px, py - ih * .015f, bw / 2, bh / 2, ih * .015f))));
+        if (d > .5f) return back;
+        Col front = sample(p->px, p->w, p->h, (px + bw / 2) / bw, (py + bh / 2) / bh);
+        return mixc(back, front, clampf(.5f - d, 0, 1));
+    }
     if (ia > aspect) u = .5f + (u - .5f) * aspect / ia;
     else v = .5f + (v - .5f) * ia / aspect;
+    return sample(p->px, p->w, p->h, u, v);
+}
+/* Smooth (bilinear) sampling at (u, v) in 0..1; see-through parts come out on light grey. */
+static Col sample(const uint32_t* px, int w, int h, float u, float v) {
+    struct { int w, h; const uint32_t* px; } q = {w, h, px}, *p = &q;
     float x = clampf(u * p->w - .5f, 0, (float)p->w - 1), y = clampf(v * p->h - .5f, 0, (float)p->h - 1);
     int x0 = (int)x, y0 = (int)y, x1 = x0 + 1 < p->w ? x0 + 1 : x0, y1 = y0 + 1 < p->h ? y0 + 1 : y0;
     float fx = x - x0, fy = y - y0;
@@ -345,7 +416,7 @@ static Col picture_at(const Picture* p, float u, float v, float aspect) {
 /* What's inside a tile's rim at (u, v): the picture or drawn art, with gloss over the top. */
 static Col tile_pixel(int who, float u, float v, float aspect, float pix) {
     Col k;
-    if (who >= 0 && g_pic[who].px) k = picture_at(&g_pic[who], u, v, aspect);
+    if (who >= 0 && g_pic[who].px) k = picture_at(&g_pic[who], u, v, aspect, 1.f / pix);
     else k = art_at(who >= 0 ? game_art(who) : ART_ONLINE, u, v, aspect, pix);
     float gx = (u - .5f) / .98f, gy = (v + .62f) / 1.08f;
     return mixc(k, WHITE, (who >= 0 && g_pic[who].px ? .13f : .2f) * (1.f - smooth(.96f, 1.0f, sqrtf(gx * gx + gy * gy))));
@@ -983,4 +1054,54 @@ static BOOL home_key(WPARAM k) {
     set_sel(s);
     redraw();
     return TRUE;
+}
+
+/* ---- fetching box art ---- */
+#define WM_COVERS_FETCHED (WM_APP + 20)
+static volatile LONG g_cover_fetching;
+static BOOL g_cover_tried[NGAMES];
+static BOOL is_png(const wchar_t* path) {
+    char* b = NULL;
+    DWORD n = 0;
+    b = read_file(path, &n);
+    BOOL ok = b && n > 8 && !memcmp(b, "\x89PNG\r\n\x1a\n", 8);
+    free(b);
+    return ok;
+}
+/* Downloads the box art of each game that has neither a picture of the player's nor a cover yet. Returns how many
+   it got. Runs on its own thread; tells the window when it got any. */
+static int fetch_covers_now(void) {
+    int got = 0;
+    for (int i = 0; i < NGAMES; i++) {
+        wchar_t path[MAX_PATH], part[MAX_PATH], url[128];
+        if (!game_id(i) || g_pic_own[i] || g_cover_tried[i]) continue;
+        cover_path(i, path);
+        if (file_exists(path)) continue;
+        g_cover_tried[i] = TRUE; /* once per run, even if GameTDB can't be reached */
+        wchar_t dir[MAX_PATH];
+        wcscpy(dir, path);
+        *wcsrchr(dir, L'\\') = 0;
+        CreateDirectoryW(dir, NULL);
+        _snwprintf(part, MAX_PATH, L"%s.part", path);
+        _snwprintf(url, 128, L"https://art.gametdb.com/wii/cover/US/%s.png", game_id(i));
+        HANDLE f = CreateFileW(part, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+        if (f == INVALID_HANDLE_VALUE) continue;
+        int status = http_get(url, L"image/png", f, NULL, NULL);
+        CloseHandle(f);
+        if (status == 200 && is_png(part) && MoveFileExW(part, path, MOVEFILE_REPLACE_EXISTING)) got++;
+        else DeleteFileW(part);
+    }
+    return got;
+}
+static DWORD WINAPI fetch_covers_job(LPVOID arg) {
+    (void)arg;
+    if (fetch_covers_now() && g_wnd) PostMessageW(g_wnd, WM_COVERS_FETCHED, 0, 0);
+    InterlockedExchange(&g_cover_fetching, 0);
+    return 0;
+}
+static void fetch_covers(void) {
+    if (InterlockedCompareExchange(&g_cover_fetching, 1, 0)) return;
+    HANDLE t = CreateThread(NULL, 0, fetch_covers_job, NULL, 0, NULL);
+    if (t) CloseHandle(t);
+    else InterlockedExchange(&g_cover_fetching, 0);
 }

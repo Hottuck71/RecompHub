@@ -44,8 +44,13 @@ Put `RecompHub.exe` in a folder with plenty of free space (about 20 GB per game)
 The hub makes a `Tile art` folder next to itself. Put a picture for each game in it (.jpg, .png, .bmp or .gif), named
 after the game: `Wii Sports Resort.jpg` or `resort.jpg`, `Wii Party.jpg` or `party.jpg`, `Mario Party 9.jpg` or
 `marioparty9.jpg` (the recomp's name works too). The picture fills that game's tile, cropped to fit; wide pictures
-(about 4:3) fit best. A game without one gets a drawn tile. New pictures show up when you come back to the hub. No
-pictures come with the hub.
+(about 4:3) fit best. New pictures show up when you come back to the hub.
+
+A game without a picture of yours shows its box art instead: the hub downloads it once from
+[GameTDB](https://www.gametdb.com/) (the cover site Dolphin uses), by the disc ID of the USA release each recomp is
+built from, into `Tile art\Covers`. A tall cover is shown whole in the middle of the tile over a dimmed blur of
+itself. Without the internet (or for a recomp the hub doesn't know), the game gets a drawn tile. No pictures come
+with the hub.
 
 ## Menu music
 
