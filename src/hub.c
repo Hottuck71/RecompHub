@@ -48,8 +48,10 @@
 #include <math.h>
 #include <stdint.h>
 #include <mmsystem.h>
+#include <wctype.h>
+#include <wincodec.h>
 
-#define HUB_VERSION L"1.3.0"
+#define HUB_VERSION L"1.4.0"
 #define RELAY_PORT 51020
 #define RELAY_PORT_S L"51020"
 #define FIREWALL_RULE L"Recomp Hub relay"
@@ -1565,6 +1567,9 @@ static LRESULT CALLBACK wnd_proc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         g_wnd = w;
         create_controls();
         ensure_music_folder();
+        ensure_art_folder();
+        load_tile_pictures();
+        start_intro(.55, .09); /* the tiles drop in */
         layout_hits();
         if (music_on()) music_next();
         refresh_nav();
@@ -1599,12 +1604,15 @@ static LRESULT CALLBACK wnd_proc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_LBUTTONDOWN:
         g_pressed = hit_at((short)LOWORD(lp), (short)HIWORD(lp));
+        redraw(); /* a pressed tile sinks a little */
         if (g_page == PAGE_HOME) SetFocus(w);
         return 0;
     case WM_LBUTTONUP: {
         int h = hit_at((short)LOWORD(lp), (short)HIWORD(lp));
-        if (h >= 0 && h == g_pressed) activate(h);
+        int was = g_pressed;
         g_pressed = -1;
+        if (h >= 0 && h == was) activate(h);
+        redraw();
         return 0;
     }
     case WM_XBUTTONUP: /* the mouse's back button */
@@ -1620,6 +1628,9 @@ static LRESULT CALLBACK wnd_proc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         if (wp == MCI_NOTIFY_SUCCESSFUL && music_on() && !g_music_paused) music_next();
         return 0;
     case WM_ACTIVATEAPP:
+        g_app_active = (BOOL)wp;
+        if (wp && load_tile_pictures()) redraw(); /* pictures added to Tile art meanwhile */
+        anim_kick();
         if (wp && g_music_away) {
             g_music_away = FALSE;
             music_resume();
@@ -1659,6 +1670,10 @@ static LRESULT CALLBACK wnd_proc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_TIMER:
+        if (wp == TIMER_ANIM) {
+            anim_frame();
+            return 0;
+        }
         if (wp == TIMER_BUILD) show_build_detail();
         if (wp == TIMER_UPDATES) {
             SetTimer(w, TIMER_UPDATES, UPDATE_EVERY_MS, NULL); /* back to the usual pace after a retry */

@@ -212,7 +212,8 @@ int wmain(void) {
     g_page = PAGE_HOME;
     layout_hits();
     BOOL hits_ok = TRUE;
-    for (int i = 0; i < NGAMES; i++) hits_ok &= hit_at(S(tile_x(i) + tile_w() / 2), S(TILE_Y + TILE_H / 2)) == i;
+    for (int i = 0; i < NGAMES; i++) hits_ok &= hit_at(S(tile_x(i) + tile_w() / 2), S(TILE_Y + tile_h() / 2)) == i;
+    CHECK(TILE_Y + tile_h() + 34 < ONLINE_Y, L"the line under each tile clears the Play online button");
     CHECK(hits_ok && hit_at(S(CLIENT_W / 2), S(ONLINE_Y + ONLINE_H / 2)) == HIT_ONLINE && hit_at(S(5), S(5)) == -1,
           L"clicking a tile opens that game; Play online; nothing in a corner");
     CHECK(sd_round_box(0, 0, 50, 30, 10) < 0 && sd_round_box(49.9f, 29.9f, 50, 30, 10) > 0 && fabsf(sd_round_box(50, 0, 50, 30, 10)) < .01f,
@@ -221,10 +222,58 @@ int wmain(void) {
     Canvas cv = {64, 48, calloc(64 * 48, 4)};
     draw_stripes(&cv);
     uint32_t mid_px = cv.px[24 * 64 + 32] & 255, top_px = cv.px[64 + 32] & 255;
-    draw_tile(&cv, 8, 6, 48, 36, 8, ART_RESORT, FALSE);
+    draw_tile(&cv, 8, 6, 48, 36, 8, 0, 0.f, -2.f, 1.f); /* game 0, Wii Sports Resort, with no picture: drawn sky */
     uint32_t sky = cv.px[14 * 64 + 32];
     CHECK(mid_px > top_px && (sky & 255) > ((sky >> 16) & 255), L"background brightest in the middle; the Resort tile is sky blue");
+    draw_stripes(&cv);
+    draw_tile(&cv, 8, 6, 48, 36, 8, 0, 0.f, -2.f, 0.f);
+    uint32_t bare = cv.px[14 * 64 + 32];
+    draw_stripes(&cv);
+    CHECK(bare == cv.px[14 * 64 + 32], L"a tile that hasn't faded in yet draws nothing");
+    draw_tile(&cv, 8, 6, 48, 36, 8, 0, 1.f, -2.f, 1.f);
+    uint32_t plain = cv.px[24 * 64 + 32];
+    draw_stripes(&cv);
+    draw_tile(&cv, 8, 6, 48, 36, 8, 0, 1.f, .6f, 1.f); /* the sweep's band through the middle */
+    uint32_t swept = cv.px[24 * 64 + 32];
+    CHECK(((swept >> 16) & 255) > ((plain >> 16) & 255) + 30, L"the light sweep brightens the tile where it passes");
     free(cv.px);
+    CHECK(ease_out_cubic(0) == 0.f && fabsf(ease_out_cubic(1) - 1.f) < 1e-6f && ease_out_back(.7f) > 1.f && fabsf(ease_out_back(1) - 1.f) < 1e-5f,
+          L"easing: starts at 0, ends at 1, the drop-in overshoots a little");
+
+    wprintf(L"tile pictures\n");
+    CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+    CHECK(picture_matches(0, L"resort.jpg") && picture_matches(0, L"Wii Sports Resort.png") && picture_matches(0, L"ResortRecomp.jpg") &&
+          picture_matches(1, L"party.jpg") && picture_matches(1, L"Wii Party.jpeg") && picture_matches(2, L"marioparty9.jpg") &&
+          picture_matches(2, L"Mario Party 9.png") && picture_matches(2, L"party9.jpg"),
+          L"pictures match by game name, with or without Wii / Recomp");
+    CHECK(!picture_matches(1, L"marioparty9.jpg") && !picture_matches(2, L"party.jpg") && !picture_matches(0, L"party.jpg") && !picture_matches(0, L".jpg"),
+          L"and not another game's");
+    ensure_art_folder();
+    wchar_t ad[MAX_PATH], bmp[MAX_PATH];
+    art_dir(ad);
+    path_join(f2, ad, L"Put tile pictures here.txt");
+    CHECK(dir_exists(ad) && file_exists(f2), L"the Tile art folder is made, with a note in it");
+    /* an 8 x 6 picture: red on the left half, blue on the right, as a .bmp */
+    static unsigned char bm[54 + 8 * 6 * 4];
+    memset(bm, 0, sizeof bm);
+    p = bm;
+    memcpy(p, "BM", 2); p += 2; PUT4(sizeof bm); PUT4(0); PUT4(54);
+    PUT4(40); PUT4(8); PUT4(6); PUT2(1); PUT2(32); PUT4(0); PUT4(8 * 6 * 4); PUT4(2835); PUT4(2835); PUT4(0); PUT4(0);
+    for (int y = 0; y < 6; y++)
+        for (int x = 0; x < 8; x++) { *p++ = x < 4 ? 0 : 255; *p++ = 0; *p++ = x < 4 ? 255 : 0; *p++ = 255; }
+    path_join(bmp, ad, L"Wii Party.bmp");
+    write_file(bmp, (const char*)bm, sizeof bm);
+    BOOL changed = load_tile_pictures();
+    CHECK(changed && g_pic[1].px && g_pic[1].w == 8 && g_pic[1].h == 6 && !g_pic[0].px && !g_pic[2].px, L"Wii Party.bmp read for Wii Party only");
+    Col left = picture_at(&g_pic[1], .1f, .5f, 8.f / 6), right = picture_at(&g_pic[1], .9f, .5f, 8.f / 6);
+    CHECK(left.r > 200 && left.b < 50 && right.b > 200 && right.r < 50, L"its colours come through (red left, blue right)");
+    CHECK(!load_tile_pictures(), L"reading again with nothing new changes nothing");
+    DeleteFileW(bmp);
+    CHECK(load_tile_pictures() && !g_pic[1].px, L"taking the picture away goes back to the drawn tile");
+    path_join(bmp, ad, L"Mario Party 9.png");
+    write_file(bmp, "not a picture", 13);
+    load_tile_pictures();
+    CHECK(!g_pic[2].px, L"a broken picture is ignored");
 
     remove_tree(tmp);
     wprintf(failures ? L"\n%d FAILED\n" : L"\nall passed\n", failures);

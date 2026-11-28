@@ -19,7 +19,8 @@ the game is built on your PC from your own disc.
 Put `RecompHub.exe` in a folder with plenty of free space (about 20 GB per game) and open it.
 
 1. **Pick a game** on the home screen ("Which game would you like to play?"): click its tile, or use the arrow
-   keys and Enter. *Back* (or Esc) returns to it.
+   keys and Enter. The tiles drop in when the hub opens; the one you point at grows, glows and catches a sweep of
+   light, and zooms as it opens. *Back* (or Esc) returns.
 2. **Get the game files.** *Download & install* fetches that recomp's newest release from GitHub (about 160 MB)
    into `Games\<recomp>` next to the hub. If you already unpacked a recomp, use *Use a folder I already have*
    instead. *Update to newest* later keeps your settings, save and build.
@@ -37,6 +38,14 @@ Put `RecompHub.exe` in a folder with plenty of free space (about 20 GB per game)
    save. Export your Miis and records first with *Save data* in the game's launcher if you want to keep them. For a
    folder you picked with *Use a folder I already have*, it only removes it from the hub and deletes nothing. Your
    disc image is never touched.
+
+## Tile pictures
+
+The hub makes a `Tile art` folder next to itself. Put a picture for each game in it (.jpg, .png, .bmp or .gif), named
+after the game: `Wii Sports Resort.jpg` or `resort.jpg`, `Wii Party.jpg` or `party.jpg`, `Mario Party 9.jpg` or
+`marioparty9.jpg` (the recomp's name works too). The picture fills that game's tile, cropped to fit; wide pictures
+(about 4:3) fit best. A game without one gets a drawn tile. New pictures show up when you come back to the hub. No
+pictures come with the hub.
 
 ## Menu music
 
@@ -89,8 +98,9 @@ room for four tiles (a new recomp gets a plain blue one; `game_art` in `src/look
 ## How it works
 
 - The home screen, tiles and buttons are drawn by `src/look.c`, pixel by pixel into a bitmap (smooth edges without
-  GDI+), with ordinary Windows controls on the white card of each game's page. Each recomp gets its own tile picture;
-  one the hub doesn't know gets a plain blue one.
+  GDI+), with ordinary Windows controls on the white card of each game's page. Pictures are read with Windows' own
+  decoders (WIC). Animation runs on a timer only while something moves (about 60 frames a second; 30 for a picked
+  tile's glow) and stops when nothing does.
 - Building runs `Launcher.exe --test-build <disc>` in the game's folder: that recomp's own headless setup. While it
   runs, the hub shows the newest line of the game's `build-log.txt`.
 - Updates: the installed version is the game's `builder\version.txt`; the newest is the tag of the recomp's latest
