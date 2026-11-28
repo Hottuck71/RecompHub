@@ -45,8 +45,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
+#include <math.h>
+#include <stdint.h>
+#include <mmsystem.h>
 
-#define HUB_VERSION L"1.2.0"
+#define HUB_VERSION L"1.3.0"
 #define RELAY_PORT 51020
 #define RELAY_PORT_S L"51020"
 #define FIREWALL_RULE L"Recomp Hub relay"
@@ -68,6 +71,7 @@ static const Game GAMES[] = {
 };
 #define NGAMES 3
 #define PAGE_ONLINE NGAMES
+#define PAGE_HOME (NGAMES + 1)
 
 /* ---- controls ---- */
 enum {
@@ -93,7 +97,7 @@ static HINSTANCE g_inst;
 static HFONT g_font, g_font_big, g_font_head, g_font_small;
 static HBRUSH g_white;
 static int g_dpi = 96;
-static int g_page = 0;
+static int g_page = PAGE_HOME;
 static volatile LONG g_busy = 0;
 static int g_job_game = -1; /* which game a running job is for */
 static int g_prog_id = 0;   /* the progress bar a running job moves */
@@ -1060,6 +1064,8 @@ static DWORD WINAPI remove_server_job(LPVOID arg) {
     return 0;
 }
 
+#include "look.c" /* the home screen, the tiles, and menu music */
+
 /* ================= the window ================= */
 static HWND add(const wchar_t* cls, const wchar_t* text, DWORD style, int x, int y, int w, int h, int id, HFONT font) {
     HWND c = CreateWindowExW(0, cls, text, WS_CHILD | style, S(x), S(y), S(w), S(h), g_wnd, (HMENU)(INT_PTR)id, g_inst, NULL);
@@ -1074,26 +1080,17 @@ static const int ONLINE_IDS[] = {ID_OTITLE, ID_OBLURB, ID_OG1, ID_HOST, ID_STOP,
 
 static void create_controls(void) {
     const DWORD V = WS_VISIBLE;
-    add(L"STATIC", L"Recomp Hub", V, 18, 14, 240, 34, ID_HEAD, g_font_head);
-    add(L"STATIC", L"Your Wii recomps, in one place", V, 20, 48, 240, 20, ID_SUBHEAD, g_font_small);
-    for (int i = 0; i <= NGAMES; i++) {
-        HWND b = add(L"BUTTON", i < NGAMES ? GAMES[i].title : L"Play online", V | WS_TABSTOP | BS_COMMANDLINK,
-                     12, i < NGAMES ? 80 + i * 78 : 80 + i * 78 + 18, 248, 72, ID_NAV + i, NULL);
-        (void)b;
-    }
-    add(L"BUTTON", L"Keep games up to date", V | WS_TABSTOP | BS_AUTOCHECKBOX, 20, 80 + NGAMES * 78 + 18 + 84, 236, 22, ID_AUTOUPDATE, NULL);
-    add(L"STATIC", L"New releases install and build by themselves.", V, 38, 80 + NGAMES * 78 + 18 + 106, 222, 34, ID_UPDATENOTE, g_font_small);
-    const int X = 290, W = 572;
+    (void)V;
+    /* The pages' controls sit on the white card that look.c paints (CARD_X..). */
+    const int X = CARD_X + 14, W = CARD_W - 28;
     /* a game's page */
     add(L"STATIC", L"", 0, X, 16, W, 36, ID_TITLE, g_font_big);
     add(L"STATIC", L"", 0, X, 54, W, 20, ID_BLURB, NULL);
-    add(L"BUTTON", L"1   Get the game files", BS_GROUPBOX, X, 84, W, 112, ID_G1, NULL);
     add(L"STATIC", L"", SS_PATHELLIPSIS, X + 16, 108, W - 32, 20, ID_GETSTATUS, NULL); /* a long folder gets "..." */
     add(L"BUTTON", L"Download && install", WS_TABSTOP, X + 16, 134, 190, 32, ID_DOWNLOAD, NULL);
     add(L"BUTTON", L"Use a folder I already have...", WS_TABSTOP, X + 216, 134, 230, 32, ID_EXISTING, NULL);
     add(L"BUTTON", L"Uninstall", WS_TABSTOP, X + 456, 134, W - 472, 32, ID_UNINSTALL, NULL);
     add(PROGRESS_CLASSW, L"", 0, X + 16, 174, W - 32, 10, ID_DLPROG, NULL);
-    add(L"BUTTON", L"2   Build it from your disc", BS_GROUPBOX, X, 206, W, 210, ID_G2, NULL);
     add(L"STATIC", L"Your disc image (.iso, .wbfs, .rvz...)", 0, X + 16, 230, W - 32, 18, ID_ROMLBL, NULL);
     add(L"EDIT", L"", WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL, X + 16, 250, W - 134, 26, ID_ROM, NULL);
     add(L"BUTTON", L"Browse...", WS_TABSTOP, X + W - 110, 249, 94, 28, ID_ROMBROWSE, NULL);
@@ -1104,7 +1101,6 @@ static void create_controls(void) {
     add(PROGRESS_CLASSW, L"", 0, X + 16, 388, 190, 10, ID_BUILDPROG, NULL);
     add(L"STATIC", L"", SS_EDITCONTROL, X + 220, 340, W - 236, 38, ID_BUILDSTATUS, NULL);
     add(L"STATIC", L"", SS_ENDELLIPSIS, X + 220, 382, W - 236, 20, ID_BUILDDETAIL, g_font_small);
-    add(L"BUTTON", L"3   Play", BS_GROUPBOX, X, 426, W, 86, ID_G3, NULL);
     add(L"BUTTON", L"Play", WS_TABSTOP | BS_DEFPUSHBUTTON, X + 16, 452, 190, 40, ID_PLAY, g_font_big);
     add(L"BUTTON", L"Open folder", WS_TABSTOP, X + 216, 452, 120, 40, ID_OPENDIR, NULL);
     add(L"STATIC", L"Play opens the game's own launcher: graphics, controllers, Mii Maker and online rooms.", 0, X + 348, 450, W - 362, 48, ID_PLAYNOTE, g_font_small);
@@ -1112,14 +1108,12 @@ static void create_controls(void) {
     add(L"STATIC", L"Play online", 0, X, 16, W, 36, ID_OTITLE, g_font_big);
     add(L"STATIC", L"Online play goes through a small relay server (one works for all three games). One person runs it; "
                    L"everyone else only types its address.", 0, X, 54, W, 36, ID_OBLURB, NULL);
-    add(L"BUTTON", L"Host a server on this PC", BS_GROUPBOX, X, 96, W, 268, ID_OG1, NULL);
     add(L"BUTTON", L"Set up my server for me", WS_TABSTOP | BS_DEFPUSHBUTTON, X + 16, 122, 220, 36, ID_HOST, NULL);
     add(L"BUTTON", L"Stop server", WS_TABSTOP, X + 246, 122, 120, 36, ID_STOP, NULL);
     add(L"BUTTON", L"Copy address for friends", WS_TABSTOP, X + 376, 122, W - 392, 36, ID_COPY, NULL);
     add(L"EDIT", L"", WS_BORDER | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL, X + 16, 168, W - 32, 156, ID_OSTATUS, NULL);
     add(L"BUTTON", L"Start my server automatically when I sign in to Windows", WS_TABSTOP | BS_AUTOCHECKBOX, X + 16, 332, W - 192, 22, ID_AUTOSTART, NULL);
     add(L"BUTTON", L"Uninstall server", WS_TABSTOP, X + W - 166, 328, 150, 30, ID_UNSERVER, NULL);
-    add(L"BUTTON", L"Join a friend's server", BS_GROUPBOX, X, 374, W, 118, ID_OG2, NULL);
     add(L"STATIC", L"The server address your friend gave you", 0, X + 16, 398, W - 32, 18, ID_JOINLBL, NULL);
     add(L"EDIT", L"", WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL, X + 16, 418, W - 186, 28, ID_JOIN, NULL);
     add(L"BUTTON", L"Use this server", WS_TABSTOP, X + W - 160, 417, 144, 30, ID_USEJOIN, NULL);
@@ -1141,17 +1135,17 @@ static void refresh_nav(void) {
         else
             _snwprintf(key_note, 160, L"%s%s%s", st == BUILT ? L"Ready to play" : st == INSTALLED ? L"Installed: needs building" : L"Not installed",
                        ver[0] ? L"  \x00B7  " : L"", ver);
-        SendMessageW(ctl(ID_NAV + i), BCM_SETNOTE, 0, (LPARAM)key_note);
+        wcscpy(g_note[i], key_note);
+        g_note_hot[i] = update_available(i);
     }
-    SendMessageW(ctl(ID_NAV + PAGE_ONLINE), BCM_SETNOTE, 0,
-                 (LPARAM)(relay_running() ? L"Your server is running" : L"Host a server, or join a friend's"));
+    wcscpy(g_note[NGAMES], relay_running() ? L"Your server is running" : L"Host a server, or join a friend's");
+    redraw();
 }
 
 static void refresh_page(void) {
     BOOL busy = g_busy != 0;
     for (size_t k = 0; k < sizeof GAME_IDS / sizeof *GAME_IDS; k++) ShowWindow(ctl(GAME_IDS[k]), g_page < NGAMES ? SW_SHOW : SW_HIDE);
     for (size_t k = 0; k < sizeof ONLINE_IDS / sizeof *ONLINE_IDS; k++) ShowWindow(ctl(ONLINE_IDS[k]), g_page == PAGE_ONLINE ? SW_SHOW : SW_HIDE);
-    for (int i = 0; i <= NGAMES; i++) EnableWindow(ctl(ID_NAV + i), TRUE);
     if (g_page < NGAMES) {
         int i = g_page, st = game_state(i);
         BOOL mine = g_job_game == i; /* this page's game is the one working */
@@ -1202,7 +1196,7 @@ static void refresh_page(void) {
         }
         ShowWindow(ctl(ID_DLPROG), busy && mine && g_prog_id == ID_DLPROG ? SW_SHOW : SW_HIDE);
         ShowWindow(ctl(ID_BUILDPROG), busy && mine && g_prog_id == ID_BUILDPROG ? SW_SHOW : SW_HIDE);
-    } else {
+    } else if (g_page == PAGE_ONLINE) {
         BOOL running = relay_running();
         EnableWindow(ctl(ID_HOST), !busy);
         EnableWindow(ctl(ID_STOP), !busy && running);
@@ -1219,7 +1213,7 @@ static void refresh_page(void) {
         if (GetWindowTextLengthW(ctl(ID_JOIN)) == 0) SetWindowTextW(ctl(ID_JOIN), join);
         SetWindowTextW(ctl(ID_COPY), L"Copy address for friends");
     }
-    InvalidateRect(g_wnd, NULL, FALSE); /* the marker beside the open page */
+    redraw();
 }
 
 static BOOL pick_file(const wchar_t* filter, wchar_t* out) {
@@ -1387,8 +1381,11 @@ static void show_build_detail(void) {
 
 static void on_command(int id) {
     if (id >= ID_NAV && id <= ID_NAV + NGAMES) {
-        g_page = id - ID_NAV;
-        refresh_page();
+        go_page(id - ID_NAV);
+        return;
+    }
+    if (id == IDCANCEL) { /* Esc: back to the home screen */
+        if (g_page != PAGE_HOME) go_page(PAGE_HOME);
         return;
     }
     int i = g_page;
@@ -1399,12 +1396,6 @@ static void on_command(int id) {
         g_job_kind = JOB_DOWNLOAD;
         start_job(download_job, (void*)(INT_PTR)i, i, ID_DLPROG);
         break;
-    case ID_AUTOUPDATE: {
-        BOOL on = SendMessageW(ctl(ID_AUTOUPDATE), BM_GETCHECK, 0, 0) == BST_CHECKED;
-        hub_set("auto_update", on ? L"1" : L"0");
-        if (on) check_updates();
-        break;
-    }
     case ID_EXISTING:
         if (pick_folder(buf)) {
             wchar_t l[MAX_PATH];
@@ -1471,6 +1462,10 @@ static void on_command(int id) {
         wchar_t d[MAX_PATH], exe[MAX_PATH];
         game_dir(i, d);
         path_join(exe, d, L"Launcher.exe");
+        if (id == ID_PLAY) { /* quiet while the game plays; back on when the hub is used again */
+            g_music_away = TRUE;
+            music_pause();
+        }
         ShellExecuteW(g_wnd, L"open", id == ID_PLAY ? exe : d, NULL, d, SW_SHOWNORMAL);
         break;
     }
@@ -1569,7 +1564,9 @@ static LRESULT CALLBACK wnd_proc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
     case WM_CREATE:
         g_wnd = w;
         create_controls();
-        SendMessageW(ctl(ID_AUTOUPDATE), BM_SETCHECK, auto_update_on() ? BST_CHECKED : BST_UNCHECKED, 0);
+        ensure_music_folder();
+        layout_hits();
+        if (music_on()) music_next();
         refresh_nav();
         refresh_page();
         check_updates();
@@ -1585,27 +1582,53 @@ static LRESULT CALLBACK wnd_proc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         SetTextColor(dc, id == ID_SUBHEAD || id == ID_UPDATENOTE || id == ID_BUILDDETAIL || id == ID_PLAYNOTE || id == ID_JOINNOTE ? RGB(96, 96, 96) : RGB(20, 20, 20));
         return (LRESULT)g_white;
     }
+    case WM_ERASEBKGND:
+        return 1; /* WM_PAINT covers everything */
     case WM_PAINT: {
         PAINTSTRUCT ps;
         HDC dc = BeginPaint(w, &ps);
-        RECT r;
-        GetClientRect(w, &r);
-        RECT line = {S(272), 0, S(273), r.bottom};
-        HBRUSH b = CreateSolidBrush(RGB(225, 225, 225));
-        FillRect(dc, &line, b);
-        DeleteObject(b);
-        RECT nav;
-        RECT clear = {0, 0, S(11), r.bottom};
-        FillRect(dc, &clear, g_white);
-        GetWindowRect(ctl(ID_NAV + g_page), &nav);
-        MapWindowPoints(NULL, w, (POINT*)&nav, 2);
-        RECT mark = {S(4), nav.top + S(8), S(8), nav.bottom - S(8)};
-        b = CreateSolidBrush(RGB(0, 103, 192));
-        FillRect(dc, &mark, b);
-        DeleteObject(b);
+        paint_window(dc);
         EndPaint(w, &ps);
         return 0;
     }
+    case WM_MOUSEMOVE:
+        on_mouse_move((short)LOWORD(lp), (short)HIWORD(lp));
+        return 0;
+    case WM_MOUSELEAVE:
+        on_mouse_leave();
+        return 0;
+    case WM_LBUTTONDOWN:
+        g_pressed = hit_at((short)LOWORD(lp), (short)HIWORD(lp));
+        if (g_page == PAGE_HOME) SetFocus(w);
+        return 0;
+    case WM_LBUTTONUP: {
+        int h = hit_at((short)LOWORD(lp), (short)HIWORD(lp));
+        if (h >= 0 && h == g_pressed) activate(h);
+        g_pressed = -1;
+        return 0;
+    }
+    case WM_XBUTTONUP: /* the mouse's back button */
+        if (HIWORD(wp) == XBUTTON1 && g_page != PAGE_HOME) go_page(PAGE_HOME);
+        return TRUE;
+    case WM_SETCURSOR:
+        if ((HWND)wp == w && LOWORD(lp) == HTCLIENT && g_hover >= 0) {
+            SetCursor(LoadCursor(NULL, IDC_HAND));
+            return TRUE;
+        }
+        break;
+    case MM_MCINOTIFY: /* a song ended: the next one (or the same again) */
+        if (wp == MCI_NOTIFY_SUCCESSFUL && music_on() && !g_music_paused) music_next();
+        return 0;
+    case WM_ACTIVATEAPP:
+        if (wp && g_music_away) {
+            g_music_away = FALSE;
+            music_resume();
+        }
+        return 0;
+    case WM_SIZE:
+        if (wp == SIZE_MINIMIZED) music_pause();
+        else if (wp == SIZE_RESTORED && !g_music_away) music_resume();
+        return 0;
     case WM_JOB_STATUS: {
         wchar_t* text = (wchar_t*)lp;
         if (wp == 2) {
@@ -1681,6 +1704,7 @@ static LRESULT CALLBACK wnd_proc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         if (g_busy && MessageBoxW(w, L"Recomp Hub is still working. Close it anyway? (A build in progress keeps running until it finishes.)",
                                   L"Recomp Hub", MB_YESNO | MB_ICONQUESTION) != IDYES)
             return 0;
+        music_close();
         DestroyWindow(w);
         return 0;
     case WM_DESTROY:
@@ -1710,6 +1734,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show) {
     g_font_big = CreateFontW(-S(24), 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
     g_font_head = CreateFontW(-S(26), 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
     g_white = CreateSolidBrush(RGB(255, 255, 255));
+    g_font_heading = CreateFontW(-S(30), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
+    g_font_pill = CreateFontW(-S(22), 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
+    g_font_sym = CreateFontW(-S(22), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI Symbol");
+    g_font_section = CreateFontW(-S(14), 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
+    g_font_link = CreateFontW(-S(12), 0, 0, 0, FW_NORMAL, 0, TRUE, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
 
     WNDCLASSW wc = {0};
     wc.lpfnWndProc = wnd_proc;
@@ -1719,7 +1748,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show) {
     wc.hIcon = LoadIconW(inst, MAKEINTRESOURCEW(1));
     wc.lpszClassName = L"RecompHub";
     RegisterClassW(&wc);
-    DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+    DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
     RECT r = {0, 0, S(880), S(528)};
     AdjustWindowRect(&r, style, FALSE);
     HWND w = CreateWindowW(L"RecompHub", L"Recomp Hub " HUB_VERSION, style, CW_USEDEFAULT, CW_USEDEFAULT,
@@ -1727,6 +1756,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show) {
     ShowWindow(w, show);
     MSG msg;
     while (GetMessageW(&msg, NULL, 0, 0)) {
+        if (msg.message == WM_KEYDOWN && home_key(msg.wParam)) continue;
         if (IsDialogMessageW(w, &msg)) continue;
         TranslateMessage(&msg);
         DispatchMessageW(&msg);

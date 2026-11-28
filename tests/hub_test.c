@@ -163,6 +163,69 @@ int wmain(void) {
     BOOL t = find_dolphin_tool(tool);
     wprintf(L"  info  %s\n", t ? tool : L"not found on this PC (Browse would be needed)");
 
+    wprintf(L"menu music\n");
+    wchar_t md[MAX_PATH], f2[MAX_PATH];
+    ensure_music_folder();
+    music_dir(md);
+    path_join(f2, md, L"Put menu music here.txt");
+    CHECK(dir_exists(md) && file_exists(f2), L"the Music folder is made, with a note in it");
+    /* half a second of a quiet tone, as a .wav: something to play */
+    enum { RATE = 22050, SAMPLES = RATE / 2 };
+    static unsigned char wav[44 + SAMPLES * 2];
+    unsigned char* p = wav;
+    #define PUT4(v) do { DWORD x_ = (v); memcpy(p, &x_, 4); p += 4; } while (0)
+    #define PUT2(v) do { WORD x_ = (v); memcpy(p, &x_, 2); p += 2; } while (0)
+    memcpy(p, "RIFF", 4); p += 4; PUT4(36 + SAMPLES * 2); memcpy(p, "WAVEfmt ", 8); p += 8;
+    PUT4(16); PUT2(1); PUT2(1); PUT4(RATE); PUT4(RATE * 2); PUT2(2); PUT2(16);
+    memcpy(p, "data", 4); p += 4; PUT4(SAMPLES * 2);
+    for (int n = 0; n < SAMPLES; n++) PUT2((WORD)(short)(200 * sin(n * 0.06)));
+    path_join(f2, md, L"b song.wav");
+    write_file(f2, (const char*)wav, sizeof wav);
+    path_join(f2, md, L"a song.mp3"); /* not a real mp3: it must be skipped, not stop the music */
+    write_file(f2, "not music", 9);
+    path_join(f2, md, L"cover.jpg");
+    write_file(f2, "x", 1);
+    wchar_t songs[8][MAX_PATH];
+    int ns = list_music(md, songs, 8);
+    CHECK(ns == 2 && wcsstr(songs[0], L"a song.mp3") && wcsstr(songs[1], L"b song.wav"), L"songs listed by name, other files left out (%d)", ns);
+    g_wnd = CreateWindowW(L"STATIC", L"", 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL); /* for "the song ended" messages */
+    music_next();
+    wchar_t mode[32] = L"";
+    mciSendStringW(L"status " MUSIC_ALIAS L" mode", mode, 32, NULL);
+    CHECK(g_music_open && g_song == 1 && !wcscmp(mode, L"playing"), L"a broken song is skipped and the next one plays (%s)", mode);
+    music_pause();
+    mciSendStringW(L"status " MUSIC_ALIAS L" mode", mode, 32, NULL);
+    CHECK(!wcscmp(mode, L"paused"), L"pause (%s)", mode);
+    music_resume();
+    mciSendStringW(L"status " MUSIC_ALIAS L" mode", mode, 32, NULL);
+    CHECK(!wcscmp(mode, L"playing"), L"and play on (%s)", mode);
+    hub_set("music", L"0");
+    CHECK(!music_on(), L"music off is remembered");
+    hub_set("music", NULL);
+    music_close();
+    DestroyWindow(g_wnd);
+    g_wnd = NULL;
+
+    wprintf(L"home screen\n");
+    int last = tile_x(NGAMES - 1) + tile_w();
+    CHECK(tile_x(0) >= 20 && last <= CLIENT_W - 20, L"%d tiles fit across the window (%d..%d)", NGAMES, tile_x(0), last);
+    g_page = PAGE_HOME;
+    layout_hits();
+    BOOL hits_ok = TRUE;
+    for (int i = 0; i < NGAMES; i++) hits_ok &= hit_at(S(tile_x(i) + tile_w() / 2), S(TILE_Y + TILE_H / 2)) == i;
+    CHECK(hits_ok && hit_at(S(CLIENT_W / 2), S(ONLINE_Y + ONLINE_H / 2)) == HIT_ONLINE && hit_at(S(5), S(5)) == -1,
+          L"clicking a tile opens that game; Play online; nothing in a corner");
+    CHECK(sd_round_box(0, 0, 50, 30, 10) < 0 && sd_round_box(49.9f, 29.9f, 50, 30, 10) > 0 && fabsf(sd_round_box(50, 0, 50, 30, 10)) < .01f,
+          L"rounded box edges");
+    CHECK(sd_star5(0, 0, 10, .5f) < 0 && sd_star5(0, -9.9f, 10, .5f) < 0 && sd_star5(9, 9, 10, .5f) > 0, L"star: inside, its top point, outside");
+    Canvas cv = {64, 48, calloc(64 * 48, 4)};
+    draw_stripes(&cv);
+    uint32_t mid_px = cv.px[24 * 64 + 32] & 255, top_px = cv.px[64 + 32] & 255;
+    draw_tile(&cv, 8, 6, 48, 36, 8, ART_RESORT, FALSE);
+    uint32_t sky = cv.px[14 * 64 + 32];
+    CHECK(mid_px > top_px && (sky & 255) > ((sky >> 16) & 255), L"background brightest in the middle; the Resort tile is sky blue");
+    free(cv.px);
+
     remove_tree(tmp);
     wprintf(failures ? L"\n%d FAILED\n" : L"\nall passed\n", failures);
     return failures != 0;

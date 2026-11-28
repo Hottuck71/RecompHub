@@ -10,7 +10,7 @@ if ($Toolchain) {
     $inc = @("-I", "$Toolchain\include"); $lib = @("-L", "$Toolchain\lib")
 } else { $inc = @(); $lib = @() }
 New-Item -ItemType Directory -Force "$root\dist", "$root\obj" | Out-Null
-$libs = "-lwinhttp", "-lws2_32", "-lcomctl32", "-lcomdlg32", "-lshell32", "-lole32", "-luuid", "-ladvapi32", "-lgdi32", "-luser32"
+$libs = "-lwinhttp", "-lws2_32", "-lcomctl32", "-lcomdlg32", "-lshell32", "-lole32", "-luuid", "-ladvapi32", "-lgdi32", "-luser32", "-lwinmm"
 Push-Location "$root\src"
 try {
     # --preprocessor=gcc: windres can't run its default preprocessor from a folder with spaces in its path
