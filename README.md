@@ -20,7 +20,7 @@ Put `RecompHub.exe` in a folder with plenty of free space (about 20 GB per game)
 
 1. **Pick a game** on the home screen ("Which game would you like to play?"): click its tile, or use the arrow
    keys and Enter. The tiles drop in when the hub opens; the one you point at grows, glows and catches a sweep of
-   light, and zooms as it opens. *Back* (or Esc) returns.
+   light, and zooms with a little chime as it opens. *Back* (or Esc) returns.
 2. **Get the game files.** *Download & install* fetches that recomp's newest release from GitHub (about 160 MB)
    into `Games\<recomp>` next to the hub. If you already unpacked a recomp, use *Use a folder I already have*
    instead. *Update to newest* later keeps your settings, save and build.

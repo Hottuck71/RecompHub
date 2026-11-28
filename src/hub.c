@@ -51,7 +51,7 @@
 #include <wctype.h>
 #include <wincodec.h>
 
-#define HUB_VERSION L"1.5.0"
+#define HUB_VERSION L"1.6.0"
 #define RELAY_PORT 51020
 #define RELAY_PORT_S L"51020"
 #define FIREWALL_RULE L"Recomp Hub relay"

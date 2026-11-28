@@ -1,6 +1,6 @@
 /* Recomp Hub's look and sound: the striped home screen with a glossy tile per game (the player's own picture from
-   the Tile art folder, or drawn art), its animations, the Back button and the white card the game pages sit on,
-   and menu music from the Music folder. Included by hub.c (it uses its globals).
+   the Tile art folder, box art, or drawn art), its animations and click chime, the Back button and the white card
+   the game pages sit on, and menu music from the Music folder. Included by hub.c (it uses its globals).
 
    Shapes are drawn pixel by pixel into a 32-bit bitmap from distance functions, which gives smooth edges without
    GDI+; text goes on top with ordinary GDI. All sizes are in 96-DPI units, scaled with S(). */
@@ -644,6 +644,48 @@ static void music_resume(void) {
     }
 }
 
+/* ================= the click ================= */
+/* Opening a tile plays a short chime: two quick bell notes (E6 then B6) over a soft pop. It's made here, as a .wav
+   in memory, so no sound file comes with the hub. */
+#define CLICK_RATE 44100
+#define CLICK_SAMPLES (CLICK_RATE * 28 / 100)
+static unsigned char* g_click_wav;
+static DWORD g_click_len;
+static float bell(float t, float f) {
+    if (t < 0) return 0.f;
+    const float tau = 6.2831853f;
+    float env = (1.f - expf(-t * 900.f)) * expf(-t * 15.f);
+    return env * (sinf(tau * f * t) + .25f * sinf(tau * 2.f * f * t) * expf(-t * 25.f) + .08f * sinf(tau * 3.f * f * t) * expf(-t * 40.f));
+}
+static float click_sample(float t) {
+    float s = bell(t, 1318.5f) + .75f * bell(t - .055f, 1975.5f);
+    s += .45f * expf(-t * 70.f) * sinf(6.2831853f * 190.f * t) * (1.f - expf(-t * 2000.f)); /* the pop */
+    float fade = t > .24f ? 1.f - (t - .24f) / .04f : 1.f; /* to silence at the very end */
+    return s * .24f * clampf(fade, 0.f, 1.f);
+}
+static void make_click(void) {
+    DWORD data = CLICK_SAMPLES * 2;
+    unsigned char* w = malloc(44 + data);
+    if (!w) return;
+    DWORD v;
+    WORD h;
+    memcpy(w, "RIFF", 4); v = 36 + data; memcpy(w + 4, &v, 4); memcpy(w + 8, "WAVEfmt ", 8);
+    v = 16; memcpy(w + 16, &v, 4); h = 1; memcpy(w + 20, &h, 2); memcpy(w + 22, &h, 2); /* PCM, mono */
+    v = CLICK_RATE; memcpy(w + 24, &v, 4); v = CLICK_RATE * 2; memcpy(w + 28, &v, 4);
+    h = 2; memcpy(w + 32, &h, 2); h = 16; memcpy(w + 34, &h, 2);
+    memcpy(w + 36, "data", 4); memcpy(w + 40, &data, 4);
+    for (int n = 0; n < CLICK_SAMPLES; n++) {
+        short q = (short)(clampf(click_sample((float)n / CLICK_RATE), -1.f, 1.f) * 32767.f);
+        memcpy(w + 44 + n * 2, &q, 2);
+    }
+    g_click_wav = w;
+    g_click_len = 44 + data;
+}
+static void play_click(void) {
+    if (!g_click_wav) make_click();
+    if (g_click_wav) PlaySoundW((LPCWSTR)g_click_wav, NULL, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+}
+
 /* ================= the screens ================= */
 /* g_page: a game (0..NGAMES-1), PAGE_ONLINE, or PAGE_HOME, the "Which game would you like to play?" screen. */
 enum { HIT_ONLINE = NGAMES, HIT_BACK = 50, HIT_MUSIC, HIT_MUSICDIR, HIT_AUTOUPDATE, HIT_ARTDIR };
@@ -985,6 +1027,7 @@ static void go_page(int p) {
 static void activate(int id) {
     if (id >= 0 && id <= NGAMES) {
         if (g_page != PAGE_HOME || g_launch >= 0) return;
+        play_click();
         set_sel(id);
         g_launch = id; /* the tile zooms, then anim_frame opens its page */
         g_launch_t0 = now_s();

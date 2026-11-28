@@ -313,6 +313,27 @@ int wmain(void) {
     memset(g_cover_tried, 0, sizeof g_cover_tried);
     CHECK(fetch_covers_now() == 0, L"covers already there aren't downloaded again");
 
+    wprintf(L"click chime\n");
+    make_click();
+    DWORD dlen = 0;
+    if (g_click_wav) memcpy(&dlen, g_click_wav + 40, 4);
+    CHECK(g_click_wav && !memcmp(g_click_wav, "RIFF", 4) && !memcmp(g_click_wav + 8, "WAVEfmt ", 8) && dlen == CLICK_SAMPLES * 2 &&
+          g_click_len == 44 + dlen, L"a .wav made in memory (%lu ms)", (unsigned long)(CLICK_SAMPLES * 1000 / CLICK_RATE));
+    const short* pcm = (const short*)(g_click_wav + 44);
+    int peak = 0, peak_at = 0, late = 0;
+    float second = 0, before = 0;
+    for (int n = 0; n < CLICK_SAMPLES; n++) {
+        int a = abs(pcm[n]);
+        if (a > peak) { peak = a; peak_at = n; }
+        if (n > CLICK_SAMPLES - CLICK_RATE / 200 && a > late) late = a; /* the last 5 ms */
+    }
+    for (int n = CLICK_RATE * 40 / 1000; n < CLICK_RATE * 50 / 1000; n++) before += fabsf(pcm[n]);
+    for (int n = CLICK_RATE * 60 / 1000; n < CLICK_RATE * 70 / 1000; n++) second += fabsf(pcm[n]);
+    CHECK(peak > 6000 && peak < 32000 && peak_at < CLICK_RATE / 20, L"loud enough, never clipped, peaking at the start (%d at %d ms)", peak, peak_at * 1000 / CLICK_RATE);
+    CHECK(second > before * 1.2f, L"the second note comes in at 55 ms");
+    CHECK(late < 300, L"it ends in silence (no click at the end)");
+    CHECK(PlaySoundW((LPCWSTR)g_click_wav, NULL, SND_MEMORY | SND_SYNC | SND_NODEFAULT), L"Windows plays it");
+
     remove_tree(tmp);
     wprintf(failures ? L"\n%d FAILED\n" : L"\nall passed\n", failures);
     return failures != 0;
